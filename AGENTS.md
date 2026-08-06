@@ -14,8 +14,7 @@ rows into the client**, then executes them across a cluster of symmetric worker 
 (`FOR UPDATE SKIP LOCKED`, a precomputed `schedule_order` ordering key, a periodically-recomputed stats table,
 heartbeats). There is **no message broker**.
 
-Target framework is **net10.0**. Several files are commented as "POC simplification" — deliberate
-single-instance shortcuts, called out below and in `<remarks>` at each site.
+Target framework is **net10.0**. 
 
 ### Vocabulary (water theme)
 

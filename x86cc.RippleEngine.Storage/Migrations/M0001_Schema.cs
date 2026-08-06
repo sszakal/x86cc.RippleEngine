@@ -15,9 +15,6 @@ namespace x86cc.RippleEngine.Storage.Migrations;
 /// </para>
 /// </summary>
 /// <remarks>
-/// POC simplification: the <c>ripple</c> / <c>splash</c> tables are not partitioned yet. Monthly RANGE
-/// partitioning by <c>created_at</c> (so retention can drop whole old partitions) is a Phase-2 add.
-/// </remarks>
 [Migration(1)]
 public sealed class M0001_Schema : Migration
 {
