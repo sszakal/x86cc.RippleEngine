@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Dapper" />
+        <PackageReference Include="FluentMigrator" />
+        <PackageReference Include="FluentMigrator.Runner.Postgres" />
+        <PackageReference Include="Npgsql" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.RippleEngine.Core\x86cc.RippleEngine.Core.csproj" />
+    </ItemGroup>
+
+    <!-- The fan-out INSERT…SELECT builder (WaveInsertSql) is a shared internal for the queryable-source
+         provider packages, so the schedule_order/type_key SQL lives in exactly one place. -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="x86cc.RippleEngine.MartenDb" />
+        <InternalsVisibleTo Include="x86cc.RippleEngine.EntityFrameworkCore" />
+    </ItemGroup>
+
+</Project>

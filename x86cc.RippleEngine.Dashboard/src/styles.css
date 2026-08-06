@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { height: 100%; }
+
+/* Small reusable component classes in the TailAdmin aesthetic. */
+@layer components {
+  .card {
+    @apply rounded-2xl border border-gray-200 bg-white p-5 shadow-sm;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .th {
+    @apply px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500;
+  }
+  .td {
+    @apply px-5 py-4 text-sm text-gray-700;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}

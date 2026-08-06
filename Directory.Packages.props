@@ -1,0 +1,76 @@
+<Project>
+
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <!-- Lets a PackageVersion pin a transitive dependency (e.g. MessagePack via Aspire) without
+             needing a fake direct PackageReference. -->
+        <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    </PropertyGroup>
+
+    <!-- Aspire hosting. The core packages track Aspire.AppHost.Sdk/13.4.6 in the AppHost csproj
+         (the SDK reads the central PackageVersion to pick the DCP/dashboard). -->
+    <ItemGroup>
+        <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.4.6" />
+        <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
+        <PackageVersion Include="Aspire.Hosting.Valkey" Version="13.4.6" />
+        <PackageVersion Include="Aspire.Hosting.Testing" Version="13.4.6" />
+        <!-- Pin the (otherwise transitive) MessagePack pulled in by the Aspire AppHost up to a patched
+             2.x — 2.5.192 carries advisory GHSA-hv8m-jj95-wg3x, fixed in 2.5.198+. -->
+        <PackageVersion Include="MessagePack" Version="2.5.302" />
+    </ItemGroup>
+
+    <!-- Persistence / messaging / caching -->
+    <ItemGroup>
+        <PackageVersion Include="Marten" Version="9.10.0" />
+        <PackageVersion Include="Bogus" Version="35.6.1" />
+        <PackageVersion Include="Dapper" Version="2.1.79" />
+        <PackageVersion Include="FluentMigrator" Version="8.0.1" />
+        <PackageVersion Include="FluentMigrator.Runner.Postgres" Version="8.0.1" />
+        <!-- Aligned with the Npgsql 9.0.4 that Marten 9.10.0 resolves. -->
+        <PackageVersion Include="Npgsql" Version="9.0.4" />
+        <PackageVersion Include="Npgsql.DependencyInjection" Version="9.0.4" />
+        <!-- EF Core provider: 9.0.x keeps Npgsql on the same 9.0.x line as Marten (EF 10 would pull Npgsql 10). -->
+        <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+        <!-- Referenced directly for IRelationalQueryingEnumerable.CreateDbCommand() (extracting the query SQL). -->
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.1" />
+        <PackageVersion Include="ZiggyCreatures.FusionCache" Version="2.6.0" />
+        <PackageVersion Include="ZiggyCreatures.FusionCache.Backplane.StackExchangeRedis" Version="2.6.0" />
+        <PackageVersion Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson" Version="2.6.0" />
+        <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.9" />
+    </ItemGroup>
+
+    <!-- Web / service defaults -->
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="10.7.0" />
+        <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+    </ItemGroup>
+
+    <!-- Engine: hosted-service plumbing (TPL Dataflow is in the net10 shared framework) -->
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    </ItemGroup>
+
+    <!-- OpenTelemetry -->
+    <ItemGroup>
+        <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
+        <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.16.0" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+    </ItemGroup>
+
+    <!-- Test -->
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+        <PackageVersion Include="xunit" Version="2.9.3" />
+        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+        <PackageVersion Include="Shouldly" Version="4.3.0" />
+        <PackageVersion Include="Testcontainers.PostgreSql" Version="4.12.0" />
+        <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    </ItemGroup>
+
+</Project>

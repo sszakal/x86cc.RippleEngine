@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- System.Threading.Tasks.Dataflow ships in the net10 shared framework (no package needed). -->
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Options" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.RippleEngine.Core\x86cc.RippleEngine.Core.csproj" />
+        <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
+    </ItemGroup>
+
+</Project>

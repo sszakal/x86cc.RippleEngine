@@ -55,3 +55,19 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# macOS
+.DS_Store
+
+# JetBrains Rider
+.idea/
+.air/
+# Per-user solution settings (local machine paths, personal test sessions) — the shared team layer is
+# the .DotSettings file without the .user suffix.
+*.DotSettings.user
+
+# Generated Angular dashboard output. Built into the Worker's wwwroot by the csproj's BuildAngularDashboard
+# target locally, and by the Node stage in x86cc.Ripple.Sample.Worker/Dockerfile for containers.
+x86cc.Ripple.Sample.Worker/wwwroot/
+
+.claude/worktrees/

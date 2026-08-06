@@ -1,0 +1,24 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <UserSecretsId>5e80e24d-fb80-472c-9bf0-5a914f7b8326</UserSecretsId>
+    </PropertyGroup>
+
+    <!-- Explicit reference so CPM supplies the version (13.4.6). Without it, the Aspire.AppHost.Sdk adds
+         Aspire.Hosting.AppHost as an implicit reference that carries the SDK's own version, which CPM
+         rejects with NU1009. -->
+    <ItemGroup>
+        <PackageReference Include="Aspire.Hosting.AppHost" />
+        <PackageReference Include="Aspire.Hosting.PostgreSQL" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.Ripple.Sample.WebAPI\x86cc.Ripple.Sample.WebAPI.csproj" />
+        <ProjectReference Include="..\x86cc.Ripple.Sample.Worker\x86cc.Ripple.Sample.Worker.csproj" />
+    </ItemGroup>
+
+</Project>

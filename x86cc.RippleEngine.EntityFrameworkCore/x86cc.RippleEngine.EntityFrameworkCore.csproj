@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <!-- EF1001: we use IRelationalQueryingEnumerable.CreateDbCommand() (Query.Internal) to turn an EF query
+             into a parameterised DbCommand without executing it — the standard, isolated-to-one-method technique. -->
+        <NoWarn>$(NoWarn);EF1001</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.RippleEngine.Core\x86cc.RippleEngine.Core.csproj" />
+        <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+        <PackageReference Include="Npgsql" />
+    </ItemGroup>
+
+</Project>

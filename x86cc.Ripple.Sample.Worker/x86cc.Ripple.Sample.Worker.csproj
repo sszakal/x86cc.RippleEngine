@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <UserSecretsId>dotnet-x86cc.Ripple.Sample.Worker-280e45ba-0b8c-4cff-a410-8d63b58a819b</UserSecretsId>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="OpenTelemetry.Extensions.Hosting"/>
+        <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.RippleEngine.Engine\x86cc.RippleEngine.Engine.csproj" />
+        <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
+        <ProjectReference Include="..\x86cc.Ripple.Sample.Domain\x86cc.Ripple.Sample.Domain.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Include="..\.dockerignore">
+        <Link>.dockerignore</Link>
+      </Content>
+    </ItemGroup>
+
+    <!--
+      Build the Angular dashboard (x86cc.RippleEngine.Dashboard) INTO this project's wwwroot as part of the
+      .NET build, so every worker replica serves an up-to-date SPA at the same origin as /api — no separate
+      `ng serve`, no dev proxy. angular.json already points its outputPath at ../x86cc.Ripple.Sample.Worker/wwwroot.
+      Incremental via Inputs/Outputs (only rebuilds when a SPA source file is newer than wwwroot/index.html).
+      Skips with a warning when Node/npm isn't on PATH so engine-only / CI builds still succeed; disable
+      explicitly with -p:BuildSpa=false.
+    -->
+    <PropertyGroup>
+      <SpaRoot>$(MSBuildProjectDirectory)/../x86cc.RippleEngine.Dashboard</SpaRoot>
+      <BuildSpa Condition="'$(BuildSpa)' == ''">true</BuildSpa>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(BuildSpa)' == 'true'">
+      <SpaInputs Include="$(SpaRoot)/src/**/*" />
+      <SpaInputs Include="$(SpaRoot)/angular.json;$(SpaRoot)/package.json;$(SpaRoot)/package-lock.json;$(SpaRoot)/tsconfig*.json;$(SpaRoot)/tailwind.config.js;$(SpaRoot)/postcss.config.js" />
+    </ItemGroup>
+
+    <Target Name="BuildAngularDashboard" BeforeTargets="Build" Condition="'$(BuildSpa)' == 'true'"
+            Inputs="@(SpaInputs)" Outputs="$(MSBuildProjectDirectory)/wwwroot/index.html">
+      <!-- Probe for npm; skip the build (don't fail) when Node isn't installed. -->
+      <Exec Command="npm --version" WorkingDirectory="$(SpaRoot)" ContinueOnError="true"
+            StandardOutputImportance="low" StandardErrorImportance="low">
+        <Output TaskParameter="ExitCode" PropertyName="_NpmExitCode" />
+      </Exec>
+      <Warning Condition="'$(_NpmExitCode)' != '0'"
+               Text="Node/npm not found on PATH — skipping the Angular dashboard build; wwwroot may be stale. Install Node, or pass -p:BuildSpa=false to silence." />
+      <Message Condition="'$(_NpmExitCode)' == '0'" Importance="high" Text="Building Angular dashboard -> wwwroot ..." />
+      <Exec Condition="'$(_NpmExitCode)' == '0' and !Exists('$(SpaRoot)/node_modules')"
+            Command="npm ci" WorkingDirectory="$(SpaRoot)" />
+      <Exec Condition="'$(_NpmExitCode)' == '0'" Command="npm run build" WorkingDirectory="$(SpaRoot)" />
+    </Target>
+</Project>

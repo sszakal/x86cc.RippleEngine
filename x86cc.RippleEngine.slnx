@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/Sample/">
+    <Project Path="x86cc.Ripple.Sample.AppHost/x86cc.Ripple.Sample.AppHost.csproj" />
+    <Project Path="x86cc.Ripple.Sample.Domain/x86cc.Ripple.Sample.Domain.csproj" />
+    <Project Path="x86cc.Ripple.Sample.E2ETests/x86cc.Ripple.Sample.E2ETests.csproj" />
+    <Project Path="x86cc.Ripple.Sample.WebAPI/x86cc.Ripple.Sample.WebAPI.csproj" />
+    <Project Path="x86cc.Ripple.Sample.Worker/x86cc.Ripple.Sample.Worker.csproj" />
+  </Folder>
+  <Folder Name="/SolutionItems/">
+    <File Path="AGENTS.md" />
+    <File Path="ARCHITECTURE.md" />
+    <File Path="CLAUDE.md" />
+    <File Path="Directory.Packages.props" />
+    <File Path="README.md" />
+  </Folder>
+  <Project Path="x86cc.RippleEngine.Core/x86cc.RippleEngine.Core.csproj" />
+  <Project Path="x86cc.RippleEngine.Storage/x86cc.RippleEngine.Storage.csproj" />
+  <Project Path="x86cc.RippleEngine.Engine/x86cc.RippleEngine.Engine.csproj" />
+  <Project Path="x86cc.RippleEngine.MartenDb/x86cc.RippleEngine.MartenDb.csproj" />
+  <Project Path="x86cc.RippleEngine.EntityFrameworkCore/x86cc.RippleEngine.EntityFrameworkCore.csproj" />
+  <Project Path="x86cc.RippleEngine.Tests/x86cc.RippleEngine.Tests.csproj" />
+</Solution>
