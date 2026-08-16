@@ -7,6 +7,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- The dashboard has a single (light) theme; opt out of browser auto-dark so its palette renders as designed. -->
   <meta name="color-scheme" content="light" />
+  <!--
+    The idle ripple mark (see ripple-logo.component.ts), inlined as a data URI: angular.json declares no
+    assets, so a real .svg would never reach the build output. Ring opacities run a little hotter than the
+    component's so the outer rings survive at 16px.
+  -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><g fill='none' stroke='%23465fff' stroke-width='1.8'><circle cx='16' cy='16' r='6.8' opacity='.6'/><circle cx='16' cy='16' r='10.8' opacity='.38'/><circle cx='16' cy='16' r='15' opacity='.22'/></g><circle cx='16' cy='16' r='4.4' fill='%23465fff'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
