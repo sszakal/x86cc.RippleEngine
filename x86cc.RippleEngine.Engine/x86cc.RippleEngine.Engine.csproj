@@ -4,6 +4,10 @@
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine</PackageId>
+        <Description>RippleEngine runtime: the polling dispatcher, TPL Dataflow execution pipeline, retries, crash recovery, wave stats and compaction. Add it with AddRippleEngine().AddHandler&lt;TWave, TRipple, THandler&gt;().</Description>
     </PropertyGroup>
 
     <ItemGroup>

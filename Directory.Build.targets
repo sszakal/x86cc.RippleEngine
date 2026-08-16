@@ -1,0 +1,10 @@
+<Project>
+
+    <!-- Imported AFTER each csproj body, so IsPackable is already known here (it is not in
+         Directory.Build.props, where the packable projects have not opted in yet). -->
+
+    <ItemGroup Condition="'$(IsPackable)' == 'true'">
+        <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+    </ItemGroup>
+
+</Project>

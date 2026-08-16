@@ -1,0 +1,44 @@
+<Project>
+
+    <!-- Shared build + NuGet metadata. Applies to every project in the repo; the per-package identity
+         (PackageId / Description / PackageTags) and the IsPackable opt-in live in each library csproj. -->
+
+    <PropertyGroup>
+        <!-- Nothing packs unless it opts in — keeps the Sample.* and test projects out of the feed. -->
+        <IsPackable>false</IsPackable>
+
+        <!-- CI appends a version suffix (e.g. ci.42) for untagged builds; a tag build passes an explicit
+             Version property instead. -->
+        <VersionPrefix>0.1.0</VersionPrefix>
+
+        <Authors>Stefan Szakal</Authors>
+        <Company>x86.cc</Company>
+        <Product>RippleEngine</Product>
+        <Copyright>Copyright (c) 2026 Stefan Szakal</Copyright>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/sszakal/x86cc.RippleEngine</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/sszakal/x86cc.RippleEngine</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageTags>postgres;background-jobs;fan-out;distributed;task-queue;dotnet</PackageTags>
+
+        <!-- Symbols + source link so a consumer can step into the engine. -->
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+        <!-- Ship IntelliSense docs with the packages. Set here, not in Directory.Build.targets: the SDK turns
+             this into DocumentationFile before the .targets import, so it would be read too late there.
+             The codebase documents the subtle parts rather than every member, so the "incomplete docs"
+             warnings are suppressed; malformed XML (CS1570) is deliberately left visible. -->
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <NoWarn>$(NoWarn);CS1591;CS1573;CS1574;CS1712;CS1734</NoWarn>
+    </PropertyGroup>
+
+    <!-- Deterministic paths in the symbols when running on a build agent. -->
+    <PropertyGroup Condition="'$(CI)' == 'true' or '$(GITHUB_ACTIONS)' == 'true'">
+        <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    </PropertyGroup>
+
+</Project>

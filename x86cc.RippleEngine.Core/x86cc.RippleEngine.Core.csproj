@@ -5,6 +5,10 @@
         <TargetFrameworks></TargetFrameworks>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine.Core</PackageId>
+        <Description>RippleEngine model and developer contract: IRippleHandler, IRippleContext, the wave/ripple POCOs and the fan-out builder abstractions. Dependency-free — reference this from handler and wave-creation code.</Description>
     </PropertyGroup>
 
     <!-- Core is the model package: POCOs only, no dependencies. -->

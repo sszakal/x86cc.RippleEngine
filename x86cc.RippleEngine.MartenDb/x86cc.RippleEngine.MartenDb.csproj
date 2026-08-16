@@ -4,6 +4,11 @@
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine.MartenDb</PackageId>
+        <Description>Marten fan-out provider for RippleEngine: turns a Marten LINQ query into the server-side INSERT … SELECT that creates one ripple per matching document, without loading the source rows.</Description>
+        <PackageTags>$(PackageTags);marten;document-db</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

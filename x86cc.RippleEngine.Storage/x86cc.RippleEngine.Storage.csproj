@@ -4,6 +4,11 @@
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine.Storage</PackageId>
+        <Description>RippleEngine Postgres coordination surface: the schema migration, the claim/settle/recover SQL (FOR UPDATE SKIP LOCKED) and the schedule_order stamping shared by every fan-out provider.</Description>
+        <PackageTags>$(PackageTags);dapper;fluentmigrator</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

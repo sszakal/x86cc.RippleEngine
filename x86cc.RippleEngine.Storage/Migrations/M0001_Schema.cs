@@ -14,7 +14,6 @@ namespace x86cc.RippleEngine.Storage.Migrations;
 /// in-flight / failed ripples), never the millions of settled rows.
 /// </para>
 /// </summary>
-/// <remarks>
 [Migration(1)]
 public sealed class M0001_Schema : Migration
 {

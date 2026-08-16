@@ -7,6 +7,11 @@
         <!-- EF1001: we use IRelationalQueryingEnumerable.CreateDbCommand() (Query.Internal) to turn an EF query
              into a parameterised DbCommand without executing it — the standard, isolated-to-one-method technique. -->
         <NoWarn>$(NoWarn);EF1001</NoWarn>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine.EntityFrameworkCore</PackageId>
+        <Description>EF Core fan-out provider for RippleEngine: turns an IQueryable over your DbContext into the server-side INSERT … SELECT that creates one ripple per matching row, without loading the source rows.</Description>
+        <PackageTags>$(PackageTags);entity-framework-core;efcore</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

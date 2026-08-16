@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    name: Build, test & pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Source Link wants the full history
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # A tag build is the real version (v1.2.3 -> 1.2.3); everything else gets a prerelease
+      # suffix on top of the VersionPrefix in Directory.Build.props (0.1.0 -> 0.1.0-ci.42).
+      - name: Resolve package version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "args=-p:Version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=--version-suffix ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore
+        run: dotnet restore x86cc.RippleEngine.slnx
+
+      - name: Build
+        run: dotnet build x86cc.RippleEngine.slnx -c Release --no-restore ${{ steps.version.outputs.args }}
+
+      # The engine tests spin up a real postgres:17 via Testcontainers (no in-memory fallback), so they
+      # need the runner's Docker daemon. The Sample E2E tests (Aspire AppHost) are deliberately not run.
+      - name: Test
+        run: >
+          dotnet test x86cc.RippleEngine.Tests/x86cc.RippleEngine.Tests.csproj
+          -c Release --no-build
+          --logger "trx;LogFileName=engine-tests.trx"
+          --logger "console;verbosity=normal"
+          --results-directory artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: ignore
+
+      # Packs every project with IsPackable=true: Core, Storage, Engine, MartenDb, EntityFrameworkCore.
+      # The Sample.* and test projects are excluded by the IsPackable=false default in Directory.Build.props.
+      - name: Pack
+        run: >
+          dotnet pack x86cc.RippleEngine.slnx
+          -c Release --no-build
+          -o artifacts/packages
+          ${{ steps.version.outputs.args }}
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: error
+
+  publish:
+    name: Publish to NuGet
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: nuget
+
+    steps:
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: packages
+
+      # Matching .snupkg files are pushed alongside their .nupkg automatically.
+      - name: Push
+        run: >
+          dotnet nuget push "packages/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --skip-duplicate
