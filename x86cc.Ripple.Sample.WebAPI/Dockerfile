@@ -11,17 +11,21 @@ WORKDIR /src
 COPY ["Directory.Packages.props", "./"]
 COPY ["x86cc.Ripple.Sample.WebAPI/x86cc.Ripple.Sample.WebAPI.csproj", "x86cc.Ripple.Sample.WebAPI/"]
 COPY ["x86cc.Ripple.Sample.Domain/x86cc.Ripple.Sample.Domain.csproj", "x86cc.Ripple.Sample.Domain/"]
+COPY ["x86cc.RippleEngine.Hosting/x86cc.RippleEngine.Hosting.csproj", "x86cc.RippleEngine.Hosting/"]
+COPY ["x86cc.RippleEngine.Dashboard/x86cc.RippleEngine.Dashboard.csproj", "x86cc.RippleEngine.Dashboard/"]
+COPY ["x86cc.RippleEngine.Engine/x86cc.RippleEngine.Engine.csproj", "x86cc.RippleEngine.Engine/"]
 COPY ["x86cc.RippleEngine.Storage/x86cc.RippleEngine.Storage.csproj", "x86cc.RippleEngine.Storage/"]
 COPY ["x86cc.RippleEngine.Core/x86cc.RippleEngine.Core.csproj", "x86cc.RippleEngine.Core/"]
 COPY ["x86cc.RippleEngine.MartenDb/x86cc.RippleEngine.MartenDb.csproj", "x86cc.RippleEngine.MartenDb/"]
 RUN dotnet restore "x86cc.Ripple.Sample.WebAPI/x86cc.Ripple.Sample.WebAPI.csproj"
 COPY . .
 WORKDIR "/src/x86cc.Ripple.Sample.WebAPI"
-RUN dotnet build "./x86cc.Ripple.Sample.WebAPI.csproj" -c $BUILD_CONFIGURATION -o /app/build
+# BuildSpa=false: this host serves no dashboard, and the SDK image has no Node anyway.
+RUN dotnet build "./x86cc.Ripple.Sample.WebAPI.csproj" -c $BUILD_CONFIGURATION -o /app/build -p:BuildSpa=false
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./x86cc.Ripple.Sample.WebAPI.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./x86cc.Ripple.Sample.WebAPI.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false -p:BuildSpa=false
 
 FROM base AS final
 WORKDIR /app

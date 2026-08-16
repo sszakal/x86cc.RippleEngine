@@ -1,21 +1,33 @@
 using Dapper;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Engine;
 using x86cc.RippleEngine.Storage;
 
-namespace x86cc.Ripple.Sample.Worker;
+namespace x86cc.RippleEngine.Dashboard;
 
 /// <summary>
 /// The dashboard read API (Wave / Ripple / Splash vocabulary), hosted by every worker: the engine instances
 /// are the symmetric, always-on cluster, and this surface is just read-only projections over the same
 /// <c>ripple</c> schema they already poll. camelCase aliases so the JSON matches the Angular SPA models. The
-/// SPA's own static files are served from <c>wwwroot</c> (same origin), so no proxy is needed in production.
+/// SPA's own static files are served by <see cref="RippleDashboardSpa"/> from the same origin, so no proxy is
+/// needed in production.
 /// </summary>
-internal static class DashboardApi
+/// <remarks>
+/// Mapped for you when <c>RippleSetupOptions.EnableDashboard</c> is set; call it directly to place the
+/// endpoints yourself (a different prefix, behind auth, on one host of a cluster, …).
+/// </remarks>
+public static class DashboardApi
 {
-    public static void MapDashboardApi(this WebApplication app)
+    /// <summary>Maps the dashboard's read API under <c>/api</c>. Requires the Ripple storage services
+    /// (<see cref="RippleDataSource"/>, <see cref="IEngineStore"/>, <see cref="IReportStore"/>); the
+    /// <c>/api/settings/types</c> route additionally reads this process's <see cref="RippleHandlerRegistry"/>,
+    /// so a host that runs no engine simply lists the types that already have a <c>type_schedule</c> row.</summary>
+    public static IEndpointRouteBuilder MapRippleDashboard(this IEndpointRouteBuilder endpoints)
     {
-        var api = app.MapGroup("/api");
+        var api = endpoints.MapGroup("/api");
 
         // Wave list + summary, with optional status / text / created-at-range filters. `succeeded` is derived
         // (never stored); a not-yet-refreshed wave (refreshed_at null) reports all its ripples as pending.
@@ -333,6 +345,8 @@ internal static class DashboardApi
                 retentionByWaveType = s.RetentionByWaveType.ToDictionary(kv => kv.Key, kv => kv.Value?.TotalDays)
             });
         });
+
+        return endpoints;
     }
 
     // A row of ripple.type_schedule (snake_case → PascalCase via Dapper's underscore matching).

@@ -1,9 +1,13 @@
 using System.Text.Json;
 using Dapper;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Testcontainers.PostgreSql;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.EntityFrameworkCore;
+using x86cc.RippleEngine.Engine;
+using x86cc.RippleEngine.Hosting;
 using x86cc.RippleEngine.MartenDb;
 using x86cc.RippleEngine.Storage;
 
@@ -21,8 +25,10 @@ public abstract class RippleTestBase : IAsyncLifetime
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    private IHost _container = default!;
+
     protected string ConnectionString { get; private set; } = "";
-    protected ServiceProvider Storage { get; private set; } = default!;
+    protected IServiceProvider Storage => _container.Services;
 
     protected IEngineStore Engine => Storage.GetRequiredService<IEngineStore>();
     protected ISplashStore Splashes => Storage.GetRequiredService<ISplashStore>();
@@ -37,18 +43,61 @@ public abstract class RippleTestBase : IAsyncLifetime
         await _postgres.StartAsync();
         ConnectionString = _postgres.GetConnectionString();
 
-        var services = new ServiceCollection();
-        services.AddRippleStorage(ConnectionString);
-        services.AddRippleMartenGeneration();
-        services.AddRippleEfGeneration();
-        Storage = services.BuildServiceProvider();
+        // Storage-level tests need the stores and the fan-out generators, not the engine — so the same facade
+        // every consumer uses, in its creation-side shape. This host is only a container: it is never started,
+        // hence AutoMigrate off and the explicit MigrateRipple() below.
+        var builder = Host.CreateEmptyApplicationBuilder(null);
+        builder.Services.AddLogging();
+        builder.AddRippleEngine(o =>
+        {
+            o.ConnectionString = ConnectionString;
+            o.EnableWorkers = false;
+            o.AutoMigrate = false;
+            o.UseMartenFanOut();
+            o.UseEntityFrameworkFanOut();
+        });
+
+        _container = builder.Build();
         Storage.MigrateRipple();
     }
 
     public async Task DisposeAsync()
     {
-        await Storage.DisposeAsync();
+        _container.Dispose();
         await _postgres.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Builds a host running the real engine against this test's database, with the cadence every engine test
+    /// wants: poll fast so a test finishes in seconds, refresh wave stats fast (completion is decided there),
+    /// and leave compaction effectively off so a test can still inspect ripple/splash rows after a wave settles.
+    /// </summary>
+    /// <param name="services">
+    /// Extra registrations, applied AFTER the engine's own so a test can substitute one of its services (last
+    /// registration wins) — <c>AlwaysFailingSplashStore</c> depends on that.
+    /// </param>
+    protected IHost BuildEngineHost(
+        Action<IRippleEngineBuilder> handlers,
+        Action<RippleSetupOptions>? configure = null,
+        Action<IServiceCollection>? services = null)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+        var engine = builder.AddRippleEngine(o =>
+        {
+            o.ConnectionString = ConnectionString;
+            o.MaxConcurrency = 8;
+            o.MinPollDelay = TimeSpan.FromMilliseconds(10);
+            o.MaxPollDelay = TimeSpan.FromMilliseconds(200);
+            o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
+            o.CompactionInterval = TimeSpan.FromMinutes(10);
+            configure?.Invoke(o);
+        });
+
+        handlers(engine);
+        services?.Invoke(builder.Services);
+        return builder.Build();
     }
 
     protected async Task ResetAsync()

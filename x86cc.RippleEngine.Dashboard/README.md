@@ -1,45 +1,56 @@
 # Ripple Dashboard
 
-Angular + Tailwind (TailAdmin-style) UI for Ripple: jobs → tasks → task runs.
+The monitoring surface for Ripple — waves → ripples → splashes — as a single package: the read-only API
+(`DashboardApi.MapRippleDashboard()`, mounted at `/api`) and the Angular + Tailwind SPA that consumes it.
 
-It consumes the read API exposed by `x86cc.RippleEngine.Scheduler` (`MapRippleApi`, default base
-`/api/fanout`), served by `x86cc.RippleEngine.Sample.Scheduler`.
+The SPA is **embedded in this assembly**. `spa/` is built into `dist/` during `dotnet build` and embedded as
+resources, so a host serves the whole dashboard from a package reference — there is no `wwwroot` to deploy and
+nothing to copy into a container image.
 
-## Prerequisites
+## Using it
 
-Node 20+ and npm. `npm install` once.
+Turn it on in the engine setup (`x86cc.RippleEngine.Hosting`):
 
-## Develop (`ng serve`)
+```csharp
+builder.AddRippleEngine(o => o.EnableDashboard = true);
+```
+
+The API lands on `/api` and the SPA on the root, mapped as a route **fallback** so it never shadows the host's
+own endpoints. To place the API yourself — a different prefix, behind authorization — leave the flag off and
+call `MapRippleDashboard()` where you want it.
+
+## Building the SPA
+
+Node 20+ and npm. The .NET build runs it for you (and skips with a warning when npm isn't on PATH):
 
 ```bash
-npm install
+dotnet build x86cc.RippleEngine.Dashboard/x86cc.RippleEngine.Dashboard.csproj
+dotnet build x86cc.RippleEngine.slnx -p:BuildSpa=false     # skip it explicitly
+```
+
+Or drive it directly from `spa/`:
+
+```bash
+cd spa
+npm ci
+npm run build      # -> ../dist, which the csproj embeds
+```
+
+## Developing the SPA (`ng serve`)
+
+```bash
+cd spa
 npm start          # ng serve --proxy-config proxy.conf.json  → http://localhost:4200
 ```
 
-`proxy.conf.json` forwards `/api` to the scheduler. Set its `target` to your running scheduler URL
-(when launched via the Aspire AppHost, copy the scheduler's https URL from the Aspire dashboard;
-default placeholder is `https://localhost:7100`).
-
-## Production build (served by the Scheduler)
-
-`ng build` emits straight into `../x86cc.RippleEngine.Sample.Scheduler/wwwroot` (configured in
-`angular.json`), so the scheduler serves the SPA and the API on one origin.
-
-```bash
-npm run build
-```
-
-Or build it as part of the .NET build (opt-in, requires Node):
-
-```bash
-dotnet build x86cc.RippleEngine.slnx -p:BuildDashboard=true
-```
-
-Then run the Aspire AppHost and open the scheduler's root URL.
+`proxy.conf.json` forwards `/api` to a running worker (default `http://localhost:5200`); point its `target` at
+whatever URL your engine host is on — when launched via the Aspire AppHost, copy the worker's URL from the
+Aspire dashboard.
 
 ## Structure
 
-- `src/app/core` — `models.ts`, `fanout-api.service.ts` (HttpClient → `/api/fanout/...`).
-- `src/app/app.component.ts` — TailAdmin-style shell (sidebar + header).
-- `src/app/pages` — `jobs-list` (stats + jobs), `job-tasks` (paginated, state filter),
-  `task-runs` (payload, runs, output/errors).
+- `DashboardApi.cs` — the `/api` read projections (waves, activity/histogram, per-type metrics, cluster,
+  report CSV, and the `type_schedule` settings incl. pause/resume).
+- `RippleDashboardSpa.cs` — serves the embedded bundle.
+- `spa/src/app/core` — `models.ts`, `ripple-api.service.ts`, `engine-activity.service.ts`.
+- `spa/src/app/pages` — `waves` (list, detail, timeline, heatmap), `metrics`, `settings`, `wave-range`.

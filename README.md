@@ -134,27 +134,39 @@ terminally `Failed`. **Handlers must be idempotent**: retry and crash recovery c
 
 ### 2. Wire the engine (in each worker process)
 
+One call, from `x86cc.RippleEngine.Hosting`:
+
 ```csharp
-builder.Services.AddRippleStorage(connectionString);                   // the ripple schema + stores
-builder.Services.AddRippleEngine(o => o.MaxConcurrency = 32)           // per-instance execution cap
+builder.AddRippleEngine(o =>
+    {
+        o.MaxConcurrency  = 32;                                        // per-instance execution cap
+        o.EnableDashboard = true;                                      // /api + the SPA, from this process
+        o.EnableMetrics   = true;                                      // the engine's OpenTelemetry meter
+    })
     .AddHandler<TaxChange, RecalcCompany, RecalcHandler>(batchSize: 200, gapSeconds: 1);
 
-var host = builder.Build();
-host.Services.MigrateRipple();                                         // advisory-lock-safe on every replica
-host.Run();
+builder.Build().Run();
 ```
 
-`AddRippleEngine` starts the hosted services that make this process a full peer: the dispatcher (heartbeat +
-claim), the execution pipeline, recovery, stats refresh, compaction, and pause reconciliation. Adding capacity
-is just starting another identical process.
+That registers the storage services on the `ripple` connection string, applies the schema migration before
+anything reads it (advisory-lock-safe on every replica), and starts the hosted services that make this process
+a full peer: the dispatcher (heartbeat + claim), the execution pipeline, recovery, stats refresh, compaction,
+and pause reconciliation. Adding capacity is just starting another identical process.
+
+It also sets `HostOptions.ShutdownTimeout` from `ShutdownDrainGrace`, because the framework default (5s) is
+shorter than the engine's drain (15s) — a host that leaves it alone gets hard-killed mid-drain and strands its
+in-flight ripples as `Running` until recovery times out on them.
 
 `(batchSize, gapSeconds)` is the fairness knob — a job's steady-state share of the cluster is roughly
 `batchSize / gapSeconds` relative to its competitors. Keep `batchSize` well under the cluster's total
 execution capacity for a *blended* mix (both jobs running concurrently) rather than coarse alternation.
 
+A process that only *creates* waves (an API) uses the same call with `o.EnableWorkers = false`: it gets the
+stores, the migration and the fan-out generators, but never claims or executes a ripple.
+
 ### 3. Fan out — from a query, or from a list
 
-**Marten source** (`AddRippleMartenGeneration()`):
+**Marten source** (`o.UseMartenFanOut()` in the setup lambda):
 
 ```csharp
 var wave = await martenGenerator
@@ -166,7 +178,7 @@ var wave = await martenGenerator
 // wave.RippleCount == the number of impacted companies; the cluster starts on it immediately.
 ```
 
-**EF Core source** (`AddRippleEfGeneration()`) — identical, with a `DbContext` in place of the session:
+**EF Core source** (`o.UseEntityFrameworkFanOut()`) — identical, with a `DbContext` in place of the session:
 
 ```csharp
 var wave = await efGenerator
@@ -213,22 +225,27 @@ wave cannot complete until they settle.
 
 ## Operating it
 
-- **Dashboard** — the Angular SPA (`x86cc.RippleEngine.Dashboard`) is served by every worker at its root URL,
-  same origin as its read API (`/api`): waves by year/month/day/range with timelines, per-type throughput
-  metrics, live cluster membership, a wave's aggregated report as CSV, and a settings page that edits each
-  type's `batch_size` / `gap_seconds` / `max_attempts` (including the reserved `__default__` row) and
-  pauses/resumes types. It builds into the worker's `wwwroot` as part of `dotnet build` when Node is on PATH
-  (skips with a warning otherwise; disable with `-p:BuildSpa=false`).
+- **Dashboard** — `o.EnableDashboard = true` serves the Angular SPA at the host's root URL, same origin as its
+  read API (`/api`): waves by year/month/day/range with timelines, per-type throughput metrics, live cluster
+  membership, a wave's aggregated report as CSV, and a settings page that edits each type's `batch_size` /
+  `gap_seconds` / `max_attempts` (including the reserved `__default__` row) and pauses/resumes types. Both ship
+  inside the `x86cc.RippleEngine.Dashboard` package — the SPA is **embedded in the assembly**, so there is no
+  `wwwroot` to deploy. It is built as part of `dotnet build` when Node is on PATH (skips with a warning
+  otherwise; disable with `-p:BuildSpa=false`). The SPA is mapped as a route *fallback*, so it never shadows the
+  host's own endpoints; to place the API yourself (a different prefix, behind auth) leave the flag off and call
+  `MapRippleDashboard()`.
 - **Pause / resume** — `PauseTypeAsync(typeKey)` flips a desired state and takes effect immediately (the claim
   skips the type at once); the millions of ripples move `Pending ⇄ Paused` in bounded background chunks.
   Resume can *rebase* the resumed work to the current frontier or keep its original position.
 - **Retention** — configure per wave type; a finished wave's report chunks are kept for that long after
   completion, then purged. `null` means keep forever.
   ```csharp
-  builder.Services.AddRippleStorage(cs, o => o.RetentionByWaveType["CorporateTaxChange"] = TimeSpan.FromDays(90));
+  builder.AddRippleEngine(o => o.RetentionByWaveType["CorporateTaxChange"] = TimeSpan.FromDays(90));
   ```
-- **Metrics** — `AddMeter("x86cc.RippleEngine")` in OpenTelemetry gets `ripple.claimed` / `succeeded` /
-  `failed` / `duration` (all tagged with `type_key`) plus a per-instance `ripple.executing` gauge.
+- **Metrics** — `o.EnableMetrics = true` publishes `ripple.claimed` / `succeeded` / `failed` / `duration` (all
+  tagged with `type_key`) plus a per-instance `ripple.executing` gauge, and exports them over OTLP when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. A host with its own OpenTelemetry setup can instead add the
+  meter by name: `AddMeter("x86cc.RippleEngine")`.
 
 ## Run the sample end-to-end
 
@@ -275,7 +292,8 @@ disjointness under concurrency, recovery, compaction, pause/resume, expansion, a
 | `x86cc.RippleEngine.Engine` | the runtime — dispatcher, TPL execution pipeline, recovery, stats refresh, compaction, pause reconciliation, handler registry, metrics |
 | `x86cc.RippleEngine.MartenDb` | the Marten-source `INSERT…SELECT` fan-out provider |
 | `x86cc.RippleEngine.EntityFrameworkCore` | the EF-Core-source fan-out provider (sibling of the above, same builder) |
-| `x86cc.RippleEngine.Dashboard` | the Angular + Tailwind monitoring SPA (built into the worker's `wwwroot`) |
+| `x86cc.RippleEngine.Dashboard` | the monitoring dashboard — the `/api` read projections + the Angular/Tailwind SPA (`spa/`), embedded in the assembly |
+| `x86cc.RippleEngine.Hosting` | the one entry point: `builder.AddRippleEngine(o => …).AddHandler<…>()` — **start here** |
 | `x86cc.RippleEngine.Tests` | the engine test suite (Testcontainers Postgres) |
 | `x86cc.Ripple.Sample.*` | the runnable company/tax demo (Domain, WebAPI, Worker, AppHost, E2ETests) |
 

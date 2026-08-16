@@ -41,8 +41,19 @@ public static class RippleEngineExtensions
     /// <c>AddRippleStorage</c>. Chain <c>AddHandler</c> to register the developer handlers and their per-type
     /// scheduling config.
     /// </summary>
-    public static IRippleEngineBuilder AddRippleEngine(this IServiceCollection services,
-        Action<RippleEngineOptions>? configure = null)
+    /// <param name="enableWorkers">
+    /// <c>false</c> registers the handler registry alone — no pollers. That is a creation-side host: it fans
+    /// waves out and (optionally) serves the dashboard, but never claims or executes a ripple.
+    /// </param>
+    /// <remarks>
+    /// Internal: the one supported entry point is <c>IHostApplicationBuilder.AddRippleEngine</c> in
+    /// <c>x86cc.RippleEngine.Hosting</c>, which owns the pieces this registration depends on but cannot see
+    /// from here — the connection string, the schema migration running before <see cref="ScheduleSeeder"/>,
+    /// and the <c>HostOptions.ShutdownTimeout</c> that has to outlast
+    /// <see cref="RippleEngineOptions.ShutdownDrainGrace"/>.
+    /// </remarks>
+    internal static IRippleEngineBuilder AddRippleEngine(this IServiceCollection services,
+        Action<RippleEngineOptions>? configure = null, bool enableWorkers = true)
     {
         var optionsBuilder = services.AddOptions<RippleEngineOptions>();
         if (configure is not null)
@@ -76,22 +87,28 @@ public static class RippleEngineExtensions
             + "or live instances are continually mistaken for dead and have their work recovered from under them");
         optionsBuilder.ValidateOnStart();
 
+        // Registered even on a creation-side host: the dashboard's /api/settings/types reads it to list the
+        // types this process knows about, and an empty registry is simply an empty list.
         var registry = new RippleHandlerRegistry();
         services.AddSingleton(registry);
-        services.AddSingleton<RippleMetrics>();
-        services.AddSingleton<ExecutionPipeline>();
 
-        // Seed each registered type's batch/gap before the dispatcher starts claiming.
-        services.AddHostedService<ScheduleSeeder>();
-        // The dispatcher owns the heartbeat now (it rides on the poll), so there is no separate beat loop.
-        services.AddHostedService<Dispatcher>();
-        services.AddHostedService<RecoveryLoop>();
-        // The only writer of the wave's live numbers / decider of wave completion.
-        services.AddHostedService<WaveStatsRefreshLoop>();
-        // Rolls finished waves into the aggregated report and reclaims their ripple/splash rows.
-        services.AddHostedService<CompactionLoop>();
-        // Reconciles ripple states toward each type's desired pause_state (async, chunked pause/resume).
-        services.AddHostedService<PauseTransitionLoop>();
+        if (enableWorkers)
+        {
+            services.AddSingleton<RippleMetrics>();
+            services.AddSingleton<ExecutionPipeline>();
+
+            // Seed each registered type's batch/gap before the dispatcher starts claiming.
+            services.AddHostedService<ScheduleSeeder>();
+            // The dispatcher owns the heartbeat now (it rides on the poll), so there is no separate beat loop.
+            services.AddHostedService<Dispatcher>();
+            services.AddHostedService<RecoveryLoop>();
+            // The only writer of the wave's live numbers / decider of wave completion.
+            services.AddHostedService<WaveStatsRefreshLoop>();
+            // Rolls finished waves into the aggregated report and reclaims their ripple/splash rows.
+            services.AddHostedService<CompactionLoop>();
+            // Reconciles ripple states toward each type's desired pause_state (async, chunked pause/resume).
+            services.AddHostedService<PauseTransitionLoop>();
+        }
 
         return new RippleEngineBuilder(services, registry);
     }

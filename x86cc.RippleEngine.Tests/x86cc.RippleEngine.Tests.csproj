@@ -27,6 +27,7 @@
         <ProjectReference Include="..\x86cc.RippleEngine.Core\x86cc.RippleEngine.Core.csproj"/>
         <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj"/>
         <ProjectReference Include="..\x86cc.RippleEngine.Engine\x86cc.RippleEngine.Engine.csproj"/>
+        <ProjectReference Include="..\x86cc.RippleEngine.Hosting\x86cc.RippleEngine.Hosting.csproj"/>
         <ProjectReference Include="..\x86cc.RippleEngine.MartenDb\x86cc.RippleEngine.MartenDb.csproj"/>
         <ProjectReference Include="..\x86cc.RippleEngine.EntityFrameworkCore\x86cc.RippleEngine.EntityFrameworkCore.csproj"/>
     </ItemGroup>

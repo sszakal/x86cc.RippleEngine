@@ -13,7 +13,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
+        <ProjectReference Include="..\x86cc.RippleEngine.Hosting\x86cc.RippleEngine.Hosting.csproj" />
         <ProjectReference Include="..\x86cc.RippleEngine.MartenDb\x86cc.RippleEngine.MartenDb.csproj" />
         <ProjectReference Include="..\x86cc.Ripple.Sample.Domain\x86cc.Ripple.Sample.Domain.csproj" />
     </ItemGroup>

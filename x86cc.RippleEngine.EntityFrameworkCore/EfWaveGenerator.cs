@@ -34,13 +34,14 @@ internal sealed class EfWaveGenerator(RippleDataSource dataSource) : IEfWaveGene
 public static class RippleEfGenerationExtensions
 {
     /// <summary>
-    /// Registers <see cref="IEfWaveGenerator"/>, the EF-Core-source fan-out generator. Requires
-    /// <c>AddRippleStorage</c> (it depends on the Ripple connection). The caller passes its own
-    /// <see cref="DbContext"/> per fan-out call.
+    /// Registers <see cref="IEfWaveGenerator"/>, the EF-Core-source fan-out generator, so a wave can be created
+    /// from an EF Core query (the fan-out runs as one server-side <c>INSERT … SELECT</c>). The caller passes its
+    /// own <see cref="DbContext"/> per fan-out call. Call it inside the <c>AddRippleEngine</c> lambda:
+    /// <code>builder.AddRippleEngine(o => o.UseEntityFrameworkFanOut());</code>
     /// </summary>
-    public static IServiceCollection AddRippleEfGeneration(this IServiceCollection services)
+    public static IRippleFeatures UseEntityFrameworkFanOut(this IRippleFeatures features)
     {
-        services.AddSingleton<IEfWaveGenerator, EfWaveGenerator>();
-        return services;
+        features.AddFeature(services => services.AddSingleton<IEfWaveGenerator, EfWaveGenerator>());
+        return features;
     }
 }

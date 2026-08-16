@@ -121,26 +121,16 @@ public sealed class ContinueExpansionTests : RippleTestBase
     // ---- helpers -----------------------------------------------------------------------------------
 
     private IHost BuildHost(IDocumentStore store, HierarchySink sink)
-    {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddSingleton(sink);
-        builder.Services.AddSingleton(store);
-        builder.Services.AddRippleStorage(ConnectionString);
-        builder.Services.AddRippleMartenGeneration();
-        builder.Services
-            .AddRippleEngine(o =>
+        => BuildEngineHost(
+            engine => engine
+                .AddHandler<RecalcContext, CompanyGroupRef, MartenGroupExpandHandler>()
+                .AddHandler<RecalcContext, CompanyTax, CompanyTaxHandler>(),
+            o => o.UseMartenFanOut(),
+            services =>
             {
-                o.MaxConcurrency = 8;
-                o.MinPollDelay = TimeSpan.FromMilliseconds(10);
-                o.MaxPollDelay = TimeSpan.FromMilliseconds(200);
-                o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
-                o.CompactionInterval = TimeSpan.FromMinutes(10); // don't compact mid-test — this inspects ripples
-            })
-            .AddHandler<RecalcContext, CompanyGroupRef, MartenGroupExpandHandler>()
-            .AddHandler<RecalcContext, CompanyTax, CompanyTaxHandler>();
-        return builder.Build();
-    }
+                services.AddSingleton(sink);
+                services.AddSingleton(store);
+            });
 
     private Task AddTypedRipplesAsync<T>(Guid waveId, IEnumerable<T> items) where T : notnull
     {

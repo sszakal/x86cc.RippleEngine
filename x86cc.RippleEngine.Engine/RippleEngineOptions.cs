@@ -7,7 +7,11 @@ namespace x86cc.RippleEngine.Engine;
 /// <see cref="MaxConcurrency"/> — the ripple cap for <b>this</b> instance; global concurrency is that cap
 /// times the number of running instances.
 /// </summary>
-public sealed class RippleEngineOptions
+/// <remarks>
+/// Not sealed: the hosting package's setup options derive from it so that the engine tunables and the
+/// process-level ones (connection string, migration, dashboard, …) are one flat object in one lambda.
+/// </remarks>
+public class RippleEngineOptions
 {
     /// <summary>A stable identity for this instance (claim ownership, heartbeat, recovery). Defaults to machine+pid+guid.</summary>
     public string InstanceId { get; set; } =
@@ -57,9 +61,11 @@ public sealed class RippleEngineOptions
     /// <c>MaxAttempts</c>, being written terminally Failed despite never having failed.
     /// </summary>
     /// <remarks>
-    /// Keep this comfortably BELOW the host's <c>HostOptions.ShutdownTimeout</c>, otherwise the host hard-kills
-    /// the process mid-drain and the cancel-and-settle path below never runs (rows are left Running for recovery
-    /// to time out on). The sample sets both together in <c>Sample.Worker/Program.cs</c>.
+    /// Must stay BELOW the host's <c>HostOptions.ShutdownTimeout</c>, otherwise the host hard-kills the process
+    /// mid-drain and the cancel-and-settle path below never runs (rows are left Running for recovery to time out
+    /// on). <c>AddRippleEngine</c> keeps the two in step for you: it derives the host timeout from this value
+    /// (plus a margin) unless <c>RippleSetupOptions.ShutdownTimeout</c> says otherwise, and refuses a pair that
+    /// would truncate the drain.
     /// </remarks>
     public TimeSpan ShutdownDrainGrace { get; set; } = TimeSpan.FromSeconds(15);
 
@@ -112,4 +118,43 @@ public sealed class RippleEngineOptions
     /// <summary>Max ripples the pause reconcile moves per pass — bounds the drain rate so a millions-row
     /// pause/resume is spread across ticks rather than done in one long-locking transaction.</summary>
     public int PauseReconcileMaxRowsPerPass { get; set; } = 200_000;
+
+    /// <summary>
+    /// Copies every tunable onto <paramref name="target"/>. The hosting package's setup options DERIVE from this
+    /// class (so the engine knobs stay flat in the one configuration lambda) and are a composition-time object,
+    /// not the registered <c>IOptions</c> instance — this is what carries the caller's values across.
+    /// </summary>
+    /// <remarks>
+    /// Written out by hand rather than reflected, and deliberately exhaustive: <b>a property added above must be
+    /// added here too</b>, or it silently stops reaching the engine when set through <c>AddRippleEngine</c>.
+    /// <c>FacadeTests.every_engine_option_reaches_the_engine</c> fails if one is missed.
+    /// </remarks>
+    internal void CopyEngineOptionsTo(RippleEngineOptions target)
+    {
+        target.InstanceId = InstanceId;
+        target.MaxConcurrency = MaxConcurrency;
+        target.PrefetchFactor = PrefetchFactor;
+        target.ClaimBatchSize = ClaimBatchSize;
+        target.MinPollDelay = MinPollDelay;
+        target.MaxPollDelay = MaxPollDelay;
+        target.SucceededBatchSize = SucceededBatchSize;
+        target.FailedBatchSize = FailedBatchSize;
+        target.SettlementRetryDelay = SettlementRetryDelay;
+        target.MaxSettlementRetryDelay = MaxSettlementRetryDelay;
+        target.ExecutionTimeout = ExecutionTimeout;
+        target.ShutdownDrainGrace = ShutdownDrainGrace;
+        target.RetryBackoff = RetryBackoff;
+        target.MaxRetryBackoff = MaxRetryBackoff;
+        target.HeartbeatInterval = HeartbeatInterval;
+        target.HeartbeatTimeout = HeartbeatTimeout;
+        target.RecoveryInterval = RecoveryInterval;
+        target.SelfReconcileGrace = SelfReconcileGrace;
+        target.WaveStatsRefreshInterval = WaveStatsRefreshInterval;
+        target.CompactionInterval = CompactionInterval;
+        target.CompactionMaxWavesPerPass = CompactionMaxWavesPerPass;
+        target.ReportChunkSize = ReportChunkSize;
+        target.PauseReconcileInterval = PauseReconcileInterval;
+        target.PauseReconcileChunkSize = PauseReconcileChunkSize;
+        target.PauseReconcileMaxRowsPerPass = PauseReconcileMaxRowsPerPass;
+    }
 }

@@ -15,7 +15,14 @@ public static class RippleStorageExtensions
     /// <see cref="ISplashStore"/> (splash settlement) — and the FluentMigrator runner for the
     /// <c>ripple</c> schema. Call <see cref="MigrateRipple"/> once at startup to apply migrations.
     /// </summary>
-    public static IServiceCollection AddRippleStorage(this IServiceCollection services,
+    /// <remarks>
+    /// Internal: storage is never registered on its own, because nothing works until the schema exists. It is
+    /// registered — with the migration ordered ahead of the engine's startup — by
+    /// <c>IHostApplicationBuilder.AddRippleEngine</c> in <c>x86cc.RippleEngine.Hosting</c>, the one supported
+    /// entry point. A host that only creates waves gets exactly this and no pollers via
+    /// <c>o.EnableWorkers = false</c>.
+    /// </remarks>
+    internal static IServiceCollection AddRippleStorage(this IServiceCollection services,
         string connectionString, Action<RippleOptions>? configure = null)
     {
         ConfigureDapper();
@@ -50,6 +57,11 @@ public static class RippleStorageExtensions
     /// Applies all pending Ripple migrations (creates the <c>ripple</c> schema). Safe to call from every
     /// instance at startup: a Postgres advisory lock serializes concurrent first runs.
     /// </summary>
+    /// <remarks>
+    /// <c>AddRippleEngine</c> runs this for you before the engine starts. It stays public for the two cases
+    /// that need to drive it themselves: <c>AutoMigrate = false</c> (migrating from a separate release step),
+    /// and a provider built but never started (tests, tooling).
+    /// </remarks>
     public static void MigrateRipple(this IServiceProvider services)
     {
         using var scope = services.CreateScope();

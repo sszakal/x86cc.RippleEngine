@@ -19,6 +19,8 @@
   <Project Path="x86cc.RippleEngine.Core/x86cc.RippleEngine.Core.csproj" />
   <Project Path="x86cc.RippleEngine.Storage/x86cc.RippleEngine.Storage.csproj" />
   <Project Path="x86cc.RippleEngine.Engine/x86cc.RippleEngine.Engine.csproj" />
+  <Project Path="x86cc.RippleEngine.Dashboard/x86cc.RippleEngine.Dashboard.csproj" />
+  <Project Path="x86cc.RippleEngine.Hosting/x86cc.RippleEngine.Hosting.csproj" />
   <Project Path="x86cc.RippleEngine.MartenDb/x86cc.RippleEngine.MartenDb.csproj" />
   <Project Path="x86cc.RippleEngine.EntityFrameworkCore/x86cc.RippleEngine.EntityFrameworkCore.csproj" />
   <Project Path="x86cc.RippleEngine.Tests/x86cc.RippleEngine.Tests.csproj" />

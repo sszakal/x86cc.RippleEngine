@@ -75,8 +75,10 @@ jobs:
           path: artifacts/test-results
           if-no-files-found: ignore
 
-      # Packs every project with IsPackable=true: Core, Storage, Engine, MartenDb, EntityFrameworkCore.
-      # The Sample.* and test projects are excluded by the IsPackable=false default in Directory.Build.props.
+      # Packs every project with IsPackable=true: Core, Storage, Engine, MartenDb, EntityFrameworkCore,
+      # Dashboard, Hosting. The Sample.* and test projects are excluded by the IsPackable=false default in
+      # Directory.Build.props. The Dashboard package embeds the Angular bundle, built by the Build step above
+      # (the runner image ships Node, so BuildSpa is left on — without it the package would ship API-only).
       - name: Pack
         run: >
           dotnet pack x86cc.RippleEngine.slnx

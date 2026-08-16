@@ -94,24 +94,17 @@ public sealed class SplashReportTests : RippleTestBase
 
     private async Task RunToCompletionAsync(ReportSink sink, Guid waveId, int? maxAttempts = null)
     {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddSingleton(sink);
-        builder.Services.AddRippleStorage(ConnectionString);
-        builder.Services
-            .AddRippleEngine(o =>
+        using var host = BuildEngineHost(
+            engine => engine.AddHandler<RecalcContext, BatchTax, ReportingHandler>(
+                batchSize: 1, gapSeconds: 1, maxAttempts: maxAttempts),
+            o =>
             {
                 o.MaxConcurrency = 4;
-                o.MinPollDelay = TimeSpan.FromMilliseconds(10);
-                o.MaxPollDelay = TimeSpan.FromMilliseconds(200);
-                o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
-                o.CompactionInterval = TimeSpan.FromMinutes(10); // don't compact mid-test — this inspects splash reports
                 o.RetryBackoff = TimeSpan.FromMilliseconds(50);
                 o.MaxRetryBackoff = TimeSpan.FromMilliseconds(100);
-            })
-            .AddHandler<RecalcContext, BatchTax, ReportingHandler>(batchSize: 1, gapSeconds: 1, maxAttempts: maxAttempts);
+            },
+            services => services.AddSingleton(sink));
 
-        using var host = builder.Build();
         await host.StartAsync();
         try
         {

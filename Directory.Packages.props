@@ -43,6 +43,8 @@
     <ItemGroup>
         <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="10.7.0" />
         <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+        <!-- Serves the dashboard SPA straight out of the assembly (the built Angular dist is embedded). -->
+        <PackageVersion Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.8" />
     </ItemGroup>
 
     <!-- Engine: hosted-service plumbing (TPL Dataflow is in the net10 shared framework) -->
@@ -50,6 +52,7 @@
         <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
     </ItemGroup>

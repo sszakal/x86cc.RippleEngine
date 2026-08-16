@@ -264,22 +264,17 @@ public sealed class CompactionTests : RippleTestBase
         await SeedBatchAsync(wave.Id, ["t1", "t2"]);
 
         var sink = new ReportSink { OnExecute = _ => null }; // all succeed
-        var builder = Host.CreateApplicationBuilder();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddSingleton(sink);
-        builder.Services.AddRippleStorage(ConnectionString);
-        builder.Services
-            .AddRippleEngine(o =>
+        using var host = BuildEngineHost(
+            engine => engine.AddHandler<RecalcContext, BatchTax, ReportingHandler>(),
+            o =>
             {
                 o.MaxConcurrency = 4;
-                o.MinPollDelay = TimeSpan.FromMilliseconds(10);
                 o.MaxPollDelay = TimeSpan.FromMilliseconds(100);
-                o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
+                // Unlike the other engine tests, this one is ABOUT compaction: let the loop run.
                 o.CompactionInterval = TimeSpan.FromMilliseconds(200);
-            })
-            .AddHandler<RecalcContext, BatchTax, ReportingHandler>();
+            },
+            services => services.AddSingleton(sink));
 
-        using var host = builder.Build();
         await host.StartAsync();
         try
         {

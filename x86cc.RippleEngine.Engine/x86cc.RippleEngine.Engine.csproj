@@ -23,4 +23,10 @@
         <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
     </ItemGroup>
 
+    <!-- Hosting is the one entry point: it registers the engine (and the storage + migration it depends on)
+         behind IHostApplicationBuilder.AddRippleEngine, so the raw IServiceCollection registration is internal. -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="x86cc.RippleEngine.Hosting" />
+    </ItemGroup>
+
 </Project>

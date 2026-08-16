@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Shouldly;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Engine;
+using x86cc.RippleEngine.Hosting;
 using x86cc.RippleEngine.Storage;
 
 namespace x86cc.RippleEngine.Tests;
@@ -183,25 +184,12 @@ public sealed class EngineTests : RippleTestBase
     }
 
     private IHost BuildHierarchyHost(HierarchySink sink)
-    {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddSingleton(sink);
-        builder.Services.AddRippleStorage(ConnectionString);
-        builder.Services
-            .AddRippleEngine(o =>
-            {
-                o.MaxConcurrency = 8;
-                o.MinPollDelay = TimeSpan.FromMilliseconds(10);
-                o.MaxPollDelay = TimeSpan.FromMilliseconds(200);
-                o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
-                o.CompactionInterval = TimeSpan.FromMinutes(10); // don't compact mid-test — these inspect ripples/splashes
-            })
-            .AddHandler<RecalcContext, SoleTraderTax, SoleTraderTaxHandler>()
-            .AddHandler<RecalcContext, CompanyTax, CompanyTaxHandler>()
-            .AddHandler<RecalcContext, CompanyGroupTax, CompanyGroupTaxHandler>();
-        return builder.Build();
-    }
+        => BuildEngineHost(
+            engine => engine
+                .AddHandler<RecalcContext, SoleTraderTax, SoleTraderTaxHandler>()
+                .AddHandler<RecalcContext, CompanyTax, CompanyTaxHandler>()
+                .AddHandler<RecalcContext, CompanyGroupTax, CompanyGroupTaxHandler>(),
+            services: s => s.AddSingleton(sink));
 
     /// <summary>
     /// Shutting down must let in-flight ripples FINISH, not cancel them. Handlers used to be linked to the
@@ -362,32 +350,19 @@ public sealed class EngineTests : RippleTestBase
             .ShouldBe(0, "the abandoned ripple must be reclaimed, not left Running forever");
     }
 
-    private IHost BuildHost(ExecutionSink sink, Action<RippleEngineOptions>? configure = null,
+    private IHost BuildHost(ExecutionSink sink, Action<RippleSetupOptions>? configure = null,
         ISplashStore? splashStore = null)
-    {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Services.AddSingleton(sink);
-        builder.Services.AddRippleStorage(ConnectionString);
-        if (splashStore is not null)
-        {
-            builder.Services.AddSingleton(splashStore);
-        }
-
-        builder.Services
-            .AddRippleEngine(o =>
+        => BuildEngineHost(
+            engine => engine.AddHandler<RecalcContext, RecalcCompany, RecalcHandler>(),
+            configure,
+            services =>
             {
-                o.MaxConcurrency = 8;
-                o.MinPollDelay = TimeSpan.FromMilliseconds(10);
-                o.MaxPollDelay = TimeSpan.FromMilliseconds(200);
-                // Completion is decided by the stats refresh; keep it snappy so the wave settles promptly.
-                o.WaveStatsRefreshInterval = TimeSpan.FromMilliseconds(150);
-                o.CompactionInterval = TimeSpan.FromMinutes(10); // don't compact mid-test — these inspect ripples/splashes
-                configure?.Invoke(o);
-            })
-            .AddHandler<RecalcContext, RecalcCompany, RecalcHandler>();
-        return builder.Build();
-    }
+                services.AddSingleton(sink);
+                if (splashStore is not null)
+                {
+                    services.AddSingleton(splashStore);
+                }
+            });
 
     private async Task<Wave> WaitForTerminalAsync(Guid waveId, TimeSpan timeout)
     {

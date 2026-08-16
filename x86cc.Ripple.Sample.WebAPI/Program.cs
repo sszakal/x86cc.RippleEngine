@@ -3,6 +3,7 @@ using Dapper;
 using Marten;
 using x86cc.Ripple.Sample.Domain;
 using x86cc.RippleEngine.Core;
+using x86cc.RippleEngine.Hosting;
 using x86cc.RippleEngine.MartenDb;
 using x86cc.RippleEngine.Storage;
 
@@ -11,19 +12,22 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("ripple")
     ?? throw new InvalidOperationException("Missing 'ripple' connection string.");
 
-// Creation side only — this process does NOT run the engine, it just creates waves. It needs the engine
-// store (to create the seed wave + query status), the Marten fan-out generator (for the taxation change),
-// and Marten itself (applying the Company schema on startup so the first fan-out has a table to select from).
-// The dashboard's read API + SPA live on the workers (the always-on engine cluster), not here.
-builder.Services.AddRippleStorage(connectionString);
-builder.Services.AddRippleMartenGeneration();
+// Creation side only — EnableWorkers=false means this process does NOT run the engine, it just creates waves.
+// It still gets the engine store (to create the seed wave + query status), the schema migration, and the Marten
+// fan-out generator (for the taxation change); Marten itself applies the Company schema on startup so the first
+// fan-out has a table to select from. The dashboard's read API + SPA live on the workers (the always-on engine
+// cluster), not here.
+builder.AddRippleEngine(o =>
+{
+    o.EnableWorkers = false;
+    o.UseMartenFanOut();
+});
 builder.Services.AddSampleMarten(connectionString, applyChangesOnStartup: true);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
-app.Services.MigrateRipple();
 
 app.UseSwagger();
 app.UseSwaggerUI();

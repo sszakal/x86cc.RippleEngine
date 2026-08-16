@@ -34,6 +34,7 @@ retries) the whole ripple. The report aggregates targets sharing an `(outcome, m
 
 ```bash
 dotnet build x86cc.RippleEngine.slnx                                    # build everything
+dotnet build x86cc.RippleEngine.slnx -p:BuildSpa=false                  # ... without the Angular dashboard
 dotnet test  x86cc.RippleEngine.Tests/x86cc.RippleEngine.Tests.csproj   # run the engine tests
 
 # run a single test
@@ -87,12 +88,15 @@ sibling packages over the same Core abstractions:
   wave create/continue; a provider subclass only builds each spec's inner `data` SQL). **`ScheduleOrderSql`**
   holds the subtle `schedule_order` stamping (base-clamp + per-type batch/gap) in **one place**, shared by both
   the unnest insert (`EngineStore.AddRipplesAsync`) and the `INSERT … SELECT` (`WaveInsertSql`).
-  `RippleTypeKey`, `RippleOptions`, `RippleDataSource`, `Migrations/M0001_Schema` (the whole schema — one
-  migration while the DB is ephemeral).
+  `RippleTypeKey`, `RippleOptions`, `RippleDataSource`, `IRippleFeatures` (the hook the optional packages hang
+  their `o.Use…()` extensions off, kept down here so a provider never has to reference Hosting),
+  `Migrations/M0001_Schema` (the whole schema — one migration while the DB is ephemeral). `AddRippleStorage` is
+  **internal** (visible to Hosting) — storage is never registered on its own.
 - **`x86cc.RippleEngine.Engine`** — the runtime. `Dispatcher` (the poller `BackgroundService`),
   `ExecutionPipeline` (TPL `ActionBlock`), `RecoveryLoop`, `WaveStatsRefreshLoop`, `RippleHandlerRegistry`,
   `RippleContext` (the internal `IRippleContext` impl), `RippleEngineOptions`, `RippleMetrics`, `ScheduleSeeder`,
-  `RippleEngineExtensions` (`AddRippleEngine().AddHandler<TWave,TRipple,THandler>()`). Depends on Core + Storage.
+  `RippleEngineExtensions` — whose `AddRippleEngine(IServiceCollection, …)` is **internal** (visible to Hosting);
+  the public surface here is `IRippleEngineBuilder.AddHandler<TWave,TRipple,THandler>()`. Depends on Core + Storage.
 - **`x86cc.RippleEngine.MartenDb`** — the Marten-source fan-out provider: `IMartenWaveGenerator`
   (`Create(IQuerySession, …)` / `Continue(IQuerySession, IRippleContext)`) whose `WaveBuilder : WaveBuilderBase`
   only produces each spec's inner `data` SQL from a Marten LINQ query (`ToCommand()` → `jsonb_build_object`).
@@ -104,10 +108,25 @@ sibling packages over the same Core abstractions:
   `EF1001` suppression — the technique is isolated to one method) and wraps each projected row as a `data`
   payload with `to_jsonb(...)`. Same `WaveInsertSql` stamping as Marten. Pinned to EF Core **9.x** so Npgsql
   stays on the 9.0.x line Marten needs (EF 10 would pull Npgsql 10). Depends on Core + Storage + Npgsql EF.
+- **`x86cc.RippleEngine.Dashboard`** — the monitoring surface, ASP.NET Core (`FrameworkReference`):
+  `DashboardApi.MapRippleDashboard()` (the read-only `/api` projections over the ripple schema, camelCase to
+  match the SPA's models) and `RippleDashboardSpa.MapRippleDashboardSpa()` (the Angular bundle, served from a
+  `ManifestEmbeddedFileProvider` as a route **fallback** so it never shadows the host's endpoints). The SPA
+  itself lives in `spa/` and its csproj builds it into `dist/` and embeds it — no `wwwroot` anywhere. Depends on
+  Core + Storage + Engine (`/api/settings/types` reads `RippleHandlerRegistry`).
+- **`x86cc.RippleEngine.Hosting`** — **the one entry point**: `IHostApplicationBuilder.AddRippleEngine(o => …)`
+  and `RippleSetupOptions` (`RippleEngineOptions` + `ConnectionString`, `AutoMigrate`, `EnableWorkers`,
+  `EnableDashboard`, `EnableMetrics`, `ShutdownTimeout`, retention). It resolves the connection string, registers
+  storage, applies the queued `IRippleFeatures` registrations, derives `HostOptions.ShutdownTimeout` from
+  `ShutdownDrainGrace`, orders the migration ahead of the engine (`RippleMigrator` + `RippleMigrationService` for
+  plain hosts, `RippleStartupFilter` for web hosts — a `WebApplication` registers its own web hosted service
+  before anything we add, so only a startup filter runs before the server listens), and maps the dashboard.
+  Depends on Core + Storage + Engine + Dashboard + OpenTelemetry.
 
 The **`Sample.*`** projects (`Domain`, `WebAPI`, `Worker`, `AppHost`, `E2ETests`) are a runnable
-company/government-taxation demo — see [README.md](README.md). `x86cc.RippleEngine.Dashboard` is a
-standalone Angular SPA, not wired into the sample.
+company/government-taxation demo — see [README.md](README.md). The Worker is the dogfood of the facade: one
+`AddRippleEngine` with `EnableDashboard`/`EnableMetrics`; the WebAPI is the creation-side shape
+(`EnableWorkers = false` + `o.UseMartenFanOut()`).
 
 ## Architecture in one screen
 

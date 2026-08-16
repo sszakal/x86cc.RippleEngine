@@ -1,5 +1,2 @@
-/node_modules
+# The Angular build output (spa/ builds into here, and the csproj embeds it into the assembly).
 /dist
-/.angular
-/.angular/cache
-npm-debug.log*

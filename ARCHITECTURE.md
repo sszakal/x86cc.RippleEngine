@@ -286,9 +286,10 @@ directly.
 
 `RippleMetrics` publishes on a BCL `Meter("x86cc.RippleEngine")` (inert without a listener): counters
 `ripple.claimed` / `ripple.succeeded` / `ripple.failed` and a `ripple.duration` histogram, **all tagged with
-`type_key`**, plus an `ripple.executing` gauge (per-instance in-flight). A host that wires OpenTelemetry with
-`AddMeter("x86cc.RippleEngine")` gets per-handler-type throughput/latency (the sample exports it to the Aspire
-dashboard). The sample also exposes `GET /engine/types` — each type's configured `batch_size` / `gap_seconds`
+`type_key`**, plus an `ripple.executing` gauge (per-instance in-flight). `RippleSetupOptions.EnableMetrics`
+wires it to OpenTelemetry (`AddMeter("x86cc.RippleEngine")`, plus the OTLP export when an endpoint is
+configured) for per-handler-type throughput/latency; the sample turns it on and the numbers land in the Aspire
+dashboard. The sample also exposes `GET /engine/types` — each type's configured `batch_size` / `gap_seconds`
 and its derived share — as the cross-process signal for its scheduler tests.
 
 ## 10. Lifecycle summary

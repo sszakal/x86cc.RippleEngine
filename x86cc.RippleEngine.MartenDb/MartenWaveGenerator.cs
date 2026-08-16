@@ -34,12 +34,14 @@ internal sealed class MartenWaveGenerator(RippleDataSource dataSource) : IMarten
 public static class RippleMartenGenerationExtensions
 {
     /// <summary>
-    /// Registers <see cref="IMartenWaveGenerator"/>, the Marten-source fan-out generator. Requires
-    /// <c>AddRippleStorage</c> (it depends on the Ripple connection).
+    /// Registers <see cref="IMartenWaveGenerator"/>, the Marten-source fan-out generator, so a wave can be
+    /// created from a Marten LINQ query (the fan-out runs as one server-side <c>INSERT … SELECT</c>). Call it
+    /// inside the <c>AddRippleEngine</c> configuration lambda:
+    /// <code>builder.AddRippleEngine(o => o.UseMartenFanOut());</code>
     /// </summary>
-    public static IServiceCollection AddRippleMartenGeneration(this IServiceCollection services)
+    public static IRippleFeatures UseMartenFanOut(this IRippleFeatures features)
     {
-        services.AddSingleton<IMartenWaveGenerator, MartenWaveGenerator>();
-        return services;
+        features.AddFeature(services => services.AddSingleton<IMartenWaveGenerator, MartenWaveGenerator>());
+        return features;
     }
 }

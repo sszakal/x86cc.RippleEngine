@@ -23,10 +23,12 @@
     </ItemGroup>
 
     <!-- The fan-out INSERT…SELECT builder (WaveInsertSql) is a shared internal for the queryable-source
-         provider packages, so the schedule_order/type_key SQL lives in exactly one place. -->
+         provider packages, so the schedule_order/type_key SQL lives in exactly one place. Hosting sees the
+         internals too: it owns AddRippleStorage, which is not registerable on its own. -->
     <ItemGroup>
         <InternalsVisibleTo Include="x86cc.RippleEngine.MartenDb" />
         <InternalsVisibleTo Include="x86cc.RippleEngine.EntityFrameworkCore" />
+        <InternalsVisibleTo Include="x86cc.RippleEngine.Hosting" />
     </ItemGroup>
 
 </Project>

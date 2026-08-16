@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+
+        <IsPackable>true</IsPackable>
+        <PackageId>x86cc.RippleEngine.Dashboard</PackageId>
+        <Description>RippleEngine monitoring dashboard: the read-only /api projections over the ripple schema plus the Angular SPA, embedded in the assembly. Enable it with RippleSetupOptions.EnableDashboard, or map it yourself with MapRippleDashboard().</Description>
+        <PackageTags>$(PackageTags);dashboard;aspnetcore</PackageTags>
+
+        <!-- The SPA lives in spa/ (an npm project). Its node_modules would otherwise be swept into the SDK's
+             default None/Compile globs — thousands of items, and a restore that never finishes. -->
+        <DefaultItemExcludes>$(DefaultItemExcludes);spa/**;dist/**</DefaultItemExcludes>
+
+        <!-- ManifestEmbeddedFileProvider reads this manifest to serve the embedded dist/ with its real paths
+             (Angular emits hashed names like main-A1B2C3.js, which the dotted EmbeddedFileProvider mangles). -->
+        <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+        <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" />
+        <PackageReference Include="Dapper" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\x86cc.RippleEngine.Engine\x86cc.RippleEngine.Engine.csproj" />
+        <ProjectReference Include="..\x86cc.RippleEngine.Storage\x86cc.RippleEngine.Storage.csproj" />
+    </ItemGroup>
+
+    <!--
+      Build the Angular SPA (spa/) into dist/ as part of the .NET build and embed it in the assembly, so a
+      consumer gets the whole dashboard — API and UI — from a package reference, with no wwwroot to deploy and
+      no static-asset copying. Incremental via Inputs/Outputs (only rebuilds when a SPA source file is newer
+      than dist/index.html). Skips with a warning when Node/npm isn't on PATH so engine-only / CI builds still
+      succeed; disable explicitly with -p:BuildSpa=false.
+    -->
+    <PropertyGroup>
+        <SpaRoot>$(MSBuildProjectDirectory)/spa</SpaRoot>
+        <SpaDist>$(MSBuildProjectDirectory)/dist</SpaDist>
+        <BuildSpa Condition="'$(BuildSpa)' == ''">true</BuildSpa>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(BuildSpa)' == 'true'">
+        <SpaInputs Include="$(SpaRoot)/src/**/*" />
+        <SpaInputs Include="$(SpaRoot)/angular.json;$(SpaRoot)/package.json;$(SpaRoot)/package-lock.json;$(SpaRoot)/tsconfig*.json;$(SpaRoot)/tailwind.config.js;$(SpaRoot)/postcss.config.js" />
+    </ItemGroup>
+
+    <Target Name="BuildAngularDashboard" BeforeTargets="BeforeBuild" Condition="'$(BuildSpa)' == 'true'"
+            Inputs="@(SpaInputs)" Outputs="$(SpaDist)/index.html">
+        <!-- Probe for npm; skip the build (don't fail) when Node isn't installed. -->
+        <Exec Command="npm --version" WorkingDirectory="$(SpaRoot)" ContinueOnError="true"
+              StandardOutputImportance="low" StandardErrorImportance="low">
+            <Output TaskParameter="ExitCode" PropertyName="_NpmExitCode" />
+        </Exec>
+        <Warning Condition="'$(_NpmExitCode)' != '0'"
+                 Text="Node/npm not found on PATH — skipping the Angular dashboard build; the embedded SPA may be stale or absent. Install Node, or pass -p:BuildSpa=false to silence." />
+        <Message Condition="'$(_NpmExitCode)' == '0'" Importance="high" Text="Building Angular dashboard -> dist/ ..." />
+        <Exec Condition="'$(_NpmExitCode)' == '0' and !Exists('$(SpaRoot)/node_modules')"
+              Command="npm ci" WorkingDirectory="$(SpaRoot)" />
+        <Exec Condition="'$(_NpmExitCode)' == '0'" Command="npm run build" WorkingDirectory="$(SpaRoot)" />
+    </Target>
+
+    <!--
+      Embed whatever is in dist/ at this point, keeping the paths relative so the generated manifest (read by
+      ManifestEmbeddedFileProvider at "dist") mirrors the folder. Collected in a target rather than a static
+      ItemGroup because the SPA build above produces those files during this same build — a static glob is
+      evaluated at project load, before they exist. The manifest itself is generated later (at
+      PrepareResourceNames), so items added here are picked up. MapRippleDashboardSpa() degrades to a 404 when
+      dist/ is empty (no Node on the build machine).
+    -->
+    <Target Name="EmbedAngularDashboard" AfterTargets="BuildAngularDashboard" BeforeTargets="BeforeBuild">
+        <ItemGroup>
+            <EmbeddedResource Include="dist/**/*" Exclude="dist/**/*.map" />
+        </ItemGroup>
+    </Target>
+
+</Project>

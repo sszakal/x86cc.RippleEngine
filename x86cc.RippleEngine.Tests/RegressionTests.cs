@@ -135,11 +135,10 @@ public sealed class RegressionTests : RippleTestBase
     {
         await ResetAsync();
 
-        var services = new ServiceCollection();
-        services.AddRippleStorage(ConnectionString);
-        await using var provider = services.BuildServiceProvider();
-
-        var runner = provider.GetRequiredService<FluentMigrator.Runner.IMigrationRunner>();
+        // The migration runner is scoped (FluentMigrator registers it that way), so resolve it from a scope
+        // rather than the container root.
+        using var scope = Storage.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<FluentMigrator.Runner.IMigrationRunner>();
         runner.MigrateDown(0);
 
         // version_info is FluentMigrator's own bookkeeping and is meant to survive a down-migration; every
@@ -324,15 +323,20 @@ public sealed class RegressionTests : RippleTestBase
     [Fact]
     public void invalid_engine_options_are_rejected_rather_than_failing_forever_at_runtime()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddRippleStorage(ConnectionString);
-        services.AddRippleEngine(o => o.ReportChunkSize = 0);
-        using var provider = services.BuildServiceProvider();
+        using var host = BuildEngineHost(
+            engine => engine.AddHandler<RecalcContext, RecalcCompany, NoopHandler>(),
+            o => o.ReportChunkSize = 0);
 
         var ex = Should.Throw<OptionsValidationException>(
-            () => provider.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
+            () => host.Services.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
         ex.Message.ShouldContain(nameof(RippleEngineOptions.ReportChunkSize));
+    }
+
+    /// <summary>A handler that is never invoked — the options above are rejected before anything runs.</summary>
+    private sealed class NoopHandler : IRippleHandler<RecalcContext, RecalcCompany>
+    {
+        public Task<SplashReport?> Execute(RecalcContext wave, RecalcCompany ripple, IRippleContext context)
+            => Task.FromResult<SplashReport?>(null);
     }
 
     /// <summary>
