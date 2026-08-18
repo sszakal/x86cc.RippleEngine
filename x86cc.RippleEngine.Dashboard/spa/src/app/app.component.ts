@@ -1,6 +1,5 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-import { EngineActivityService } from './core/engine-activity.service';
 import { RippleLogoComponent } from './core/ripple-logo.component';
 
 const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
@@ -17,15 +16,15 @@ const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
         [class.w-64]="!collapsed()" [class.px-5]="!collapsed()"
         [class.w-20]="collapsed()" [class.px-3]="collapsed()">
         <!--
-          The mark stays in the collapsed rail (only the wordmark drops) so the rail keeps an identity and the
-          activity indicator stays visible. w-20 can't fit the 36px mark and the 32px button side by side, so
-          the header stacks into a column at that width.
+          The mark stays in the collapsed rail (only the wordmark drops) so the rail keeps an identity. w-20
+          can't fit the 36px mark and the 32px button side by side, so the header stacks into a column at that
+          width.
         -->
         <div class="mb-8 flex items-center px-1"
              [class.justify-between]="!collapsed()"
              [class.flex-col]="collapsed()" [class.gap-3]="collapsed()">
           <div class="flex items-center gap-2">
-            <app-ripple-logo [active]="activity.active()" />
+            <app-ripple-logo />
             @if (!collapsed()) {
               <div class="text-lg font-semibold text-gray-900">Ripple</div>
             }
@@ -99,8 +98,6 @@ const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
   `
 })
 export class AppComponent {
-  /** Drives the logo's ripple: it animates only while the cluster is actually executing. */
-  readonly activity = inject(EngineActivityService);
   readonly collapsed = signal(localStorage.getItem(COLLAPSE_KEY) === '1');
 
   toggleSidebar(): void {
