@@ -19,6 +19,7 @@ namespace x86cc.RippleEngine.Hosting;
 public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
 {
     private readonly List<Action<IServiceCollection>> _features = [];
+    private readonly Dictionary<string, TimeSpan?> _retentionByWaveType = [];
 
     /// <summary>
     /// The Postgres connection Ripple coordinates on. Defaults to the <c>ripple</c> connection string from
@@ -76,8 +77,47 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
     /// <inheritdoc cref="RippleOptions.DefaultRetention"/>
     public TimeSpan? DefaultRetention { get; set; }
 
-    /// <inheritdoc cref="RippleOptions.RetentionByWaveType"/>
-    public IDictionary<string, TimeSpan?> RetentionByWaveType { get; } = new Dictionary<string, TimeSpan?>();
+    /// <summary>
+    /// How long a finished <typeparamref name="TWave"/> wave (its <c>wave</c> row + report chunks) is kept
+    /// after completion, overriding <see cref="DefaultRetention"/> for this wave type. Stamped as
+    /// <c>expire_at</c> when the wave compacts; the retention purge deletes it from then on.
+    /// </summary>
+    /// <typeparam name="TWave">The wave payload type — the same type argument passed to the generator's
+    /// <c>Create</c>. Every generator stamps the wave's <c>type</c> as <c>typeof(TWave).Name</c>, so this is
+    /// exactly the key compaction looks the retention up by.</typeparam>
+    public RippleSetupOptions Retention<TWave>(TimeSpan retention) where TWave : notnull
+    {
+        if (retention <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retention), retention,
+                $"Retention for {typeof(TWave).Name} must be positive — a wave would otherwise expire the "
+                + $"moment it compacts. Use {nameof(RetentionForever)}<{typeof(TWave).Name}>() to keep it forever.");
+        }
+
+        return Retention(typeof(TWave).Name, retention);
+    }
+
+    /// <summary>
+    /// Keeps finished <typeparamref name="TWave"/> waves forever — the way to exempt one wave type from a
+    /// <see cref="DefaultRetention"/> that would otherwise purge it.
+    /// </summary>
+    public RippleSetupOptions RetentionForever<TWave>() where TWave : notnull
+        => Retention(typeof(TWave).Name, retention: null);
+
+    /// <summary>
+    /// Sets the retention for a wave <c>type</c> by name (<c>null</c> ⇒ keep forever). The escape hatch for
+    /// waves whose <c>type</c> is NOT a payload type name — one created straight through
+    /// <see cref="IEngineStore"/> can carry any string. Prefer <see cref="Retention{TWave}"/>, which cannot
+    /// drift from the type it names.
+    /// </summary>
+    public RippleSetupOptions Retention(string waveType, TimeSpan? retention)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(waveType);
+        _retentionByWaveType[waveType] = retention;
+        return this;
+    }
+
+    internal IReadOnlyDictionary<string, TimeSpan?> RetentionByWaveType => _retentionByWaveType;
 
     /// <summary>Registrations contributed by the optional packages (<c>o.UseMartenFanOut()</c>,
     /// <c>o.UseEntityFrameworkFanOut()</c>), applied in order after the storage services.</summary>

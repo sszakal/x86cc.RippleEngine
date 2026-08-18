@@ -238,9 +238,15 @@ wave cannot complete until they settle.
   skips the type at once); the millions of ripples move `Pending ⇄ Paused` in bounded background chunks.
   Resume can *rebase* the resumed work to the current frontier or keep its original position.
 - **Retention** — configure per wave type; a finished wave's report chunks are kept for that long after
-  completion, then purged. `null` means keep forever.
+  completion, then purged. Unconfigured types fall back to `DefaultRetention`, and no default means keep
+  forever.
   ```csharp
-  builder.AddRippleEngine(o => o.RetentionByWaveType["CorporateTaxChange"] = TimeSpan.FromDays(90));
+  builder.AddRippleEngine(o =>
+  {
+      o.DefaultRetention = TimeSpan.FromDays(30);
+      o.Retention<CorporateTaxChange>(TimeSpan.FromDays(90));   // keyed by the wave payload type
+      o.RetentionForever<AuditRun>();                           // exempt from the default
+  });
   ```
 - **Metrics** — `o.EnableMetrics = true` publishes `ripple.claimed` / `succeeded` / `failed` / `duration` (all
   tagged with `type_key`) plus a per-instance `ripple.executing` gauge, and exports them over OTLP when

@@ -43,7 +43,14 @@ public static class RippleDashboardSpa
     /// </remarks>
     public static IEndpointRouteBuilder MapRippleDashboardSpa(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapFallback(async context =>
+        // "{*path}" — NOT the parameterless MapFallback overload, whose pattern is "{*path:nonfile}". The
+        // `nonfile` constraint rejects any path whose last segment looks like a file, so every hashed bundle
+        // (chunk-*.js, styles-*.css) failed to match ANY endpoint and fell out of the pipeline as a 404 while
+        // the extension-less shell and deep links matched fine — the browser got index.html, then 404'd on
+        // every script and stylesheet it referenced. That also made the asset branch below dead code. This
+        // overload still sets Order = int.MaxValue, so the fallback keeps its lowest-possible precedence and
+        // /api (and every host endpoint) continues to win.
+        endpoints.MapFallback("{*path}", async context =>
         {
             if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
             {

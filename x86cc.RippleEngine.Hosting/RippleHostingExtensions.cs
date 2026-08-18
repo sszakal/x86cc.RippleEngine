@@ -25,7 +25,7 @@ public static class RippleHostingExtensions
     ///     {
     ///         o.MaxConcurrency  = 32;
     ///         o.EnableDashboard = true;
-    ///         o.RetentionByWaveType["CorporateTaxChange"] = TimeSpan.FromDays(90);
+    ///         o.Retention&lt;TaxChange&gt;(TimeSpan.FromDays(90));
     ///     })
     ///     .AddHandler&lt;TaxChange, RecalcCompany, RecalcHandler&gt;(batchSize: 200, gapSeconds: 1);
     /// </code>

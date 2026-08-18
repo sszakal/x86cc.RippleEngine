@@ -124,18 +124,67 @@ public sealed class FacadeTests
         HostedServiceNames(host).ShouldNotContain("RippleMigrationService");
     }
 
+    /// <summary>
+    /// The typed override must land under the key compaction actually looks up. Every generator stamps a wave's
+    /// <c>type</c> as <c>typeof(TWave).Name</c> and <c>ReportStore</c> resolves the retention with
+    /// <c>RetentionFor(wave.Type)</c> — this asserts both ends meet, which is the whole reason
+    /// <c>Retention&lt;TWave&gt;()</c> can replace a hand-written key.
+    /// </summary>
     [Fact]
-    public void retention_reaches_the_storage_options()
+    public void typed_retention_lands_under_the_wave_type_compaction_looks_up()
     {
         using var host = Build(o =>
         {
             o.DefaultRetention = TimeSpan.FromDays(7);
-            o.RetentionByWaveType["CorporateTaxChange"] = TimeSpan.FromDays(90);
+            o.Retention<CorporateTaxChange>(TimeSpan.FromDays(90));
         });
 
         var storage = host.Services.GetRequiredService<IOptions<RippleOptions>>().Value;
-        storage.RetentionFor("CorporateTaxChange").ShouldBe(TimeSpan.FromDays(90));
+        storage.RetentionFor(nameof(CorporateTaxChange)).ShouldBe(TimeSpan.FromDays(90));
         storage.RetentionFor("anything-else").ShouldBe(TimeSpan.FromDays(7));
+    }
+
+    /// <summary>Keeping a type forever is the only way to exempt it from a default that would purge it.</summary>
+    [Fact]
+    public void retention_forever_beats_the_default()
+    {
+        using var host = Build(o =>
+        {
+            o.DefaultRetention = TimeSpan.FromDays(7);
+            o.RetentionForever<CorporateTaxChange>();
+        });
+
+        host.Services.GetRequiredService<IOptions<RippleOptions>>().Value
+            .RetentionFor(nameof(CorporateTaxChange)).ShouldBeNull();
+    }
+
+    /// <summary>The by-name escape hatch (for a wave whose type is not a payload type name) must be the same
+    /// mechanism, not a parallel one.</summary>
+    [Fact]
+    public void the_string_overload_agrees_with_the_typed_one()
+    {
+        using var host = Build(o => o.Retention("CorporateTaxChange", TimeSpan.FromDays(90)));
+
+        host.Services.GetRequiredService<IOptions<RippleOptions>>().Value
+            .RetentionFor(nameof(CorporateTaxChange)).ShouldBe(TimeSpan.FromDays(90));
+    }
+
+    /// <summary>A zero/negative retention would expire every wave of the type the moment it compacts — a
+    /// silent data-loss setting, so it is refused where it is written.</summary>
+    [Fact]
+    public void a_non_positive_retention_is_refused()
+    {
+        var ex = Should.Throw<ArgumentOutOfRangeException>(
+            () => Build(o => o.Retention<CorporateTaxChange>(TimeSpan.Zero)));
+
+        ex.Message.ShouldContain(nameof(CorporateTaxChange));
+        ex.Message.ShouldContain(nameof(RippleSetupOptions.RetentionForever));
+    }
+
+    /// <summary>A wave payload type, standing in for the caller's own — only its NAME matters here.</summary>
+    private sealed class CorporateTaxChange
+    {
+        public decimal Rate { get; set; }
     }
 
     /// <summary>

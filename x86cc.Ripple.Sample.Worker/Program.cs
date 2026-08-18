@@ -28,8 +28,8 @@ builder.AddRippleEngine(o =>
         o.EnableDashboard = true;
         // Exports ripple.claimed/succeeded/failed/duration; the OTLP endpoint Aspire injects picks them up.
         o.EnableMetrics = true;
-        o.RetentionByWaveType[nameof(CorporateTaxChange)] = TimeSpan.FromDays(90);
-        o.RetentionByWaveType[nameof(EmployeeTaxChange)] = TimeSpan.FromDays(90);
+        o.Retention<CorporateTaxChange>(TimeSpan.FromDays(90));
+        o.Retention<EmployeeTaxChange>(TimeSpan.FromDays(90));
     })
     .AddHandler<SeedRun, SeedBatch, SeedCompaniesHandler>(batchSize: 15, gapSeconds: 10)
     .AddHandler<CorporateTaxChange, RecalcCorporateTax, CorporateTaxHandler>(batchSize: 5, gapSeconds: 1)
