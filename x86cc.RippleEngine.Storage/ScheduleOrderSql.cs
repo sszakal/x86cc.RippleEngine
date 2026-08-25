@@ -95,6 +95,30 @@ internal static class ScheduleOrderSql
          """;
 
     /// <summary>
+    /// The base slot for an in-place RESCHEDULE of a live wave: the wave+type's own current HEAD — the lowest
+    /// <c>schedule_order</c> it still has pending, i.e. exactly where it sits in the global queue right now.
+    /// Re-stamping from here changes only the job's DENSITY (how many of its ripples occupy each unit of virtual
+    /// time, <c>≈ batch_size / gap_seconds</c>) and never its position, so raising the gap stretches the tail out
+    /// and lowers its throughput share without displacing any other job.
+    /// </summary>
+    /// <remarks>
+    /// A <c>min</c> where <see cref="TypeTailBaseExpr"/> is a <c>max</c>, and that is the whole difference in
+    /// intent: the resume rebase is re-ADMITTING parked work, so it must append BEHIND the type's live tail (the
+    /// work has been away and must not barge in); a reschedule is re-shaping work that never left the queue, so
+    /// it must HOLD its place. Basing a reschedule on the tail would silently demote the job — a throttle, not a
+    /// punishment. The <c>min</c> deliberately spans ALL the wave+type's pending rows, including any a concurrent
+    /// claim has locked: those are about to leave the queue anyway, and excluding them would drag the anchor
+    /// forward every time the operation raced a poll.
+    /// </remarks>
+    /// <param name="waveIdExpr">A SQL expression for the wave id.</param>
+    /// <param name="typeKeyExpr">A SQL expression for the type key — the scheduling unit.</param>
+    public static string WaveHeadBaseExpr(string waveIdExpr, string typeKeyExpr) =>
+        $"""
+         (select min(schedule_order) from {S}.ripple
+          where wave_id = {waveIdExpr} and type_key = {typeKeyExpr} and state = 'Pending')
+         """;
+
+    /// <summary>
     /// Whether a ripple's <c>type_key</c> is currently paused (its <c>type_schedule.pause_state = 'paused'</c>) —
     /// the single source of truth read by every writer of <c>'Pending'</c> (fan-out, retry requeue, recovery
     /// requeue), which writes <c>'Paused'</c> instead when this is true, so paused work never enters the claim's

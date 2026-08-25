@@ -132,6 +132,26 @@ export interface TypeScheduleUpdate {
   maxAttempts: number | null;
 }
 
+/**
+ * A reschedule of an in-flight wave. Batch/gap mean exactly what they do in a type's config, but here they are
+ * applied to the ripples that ALREADY exist — a settings edit only ever reaches the next fan-out, because
+ * batch/gap are baked into each ripple's schedule_order when the wave is created.
+ * `typeKey` null ⇒ every type the wave still has pending.
+ */
+export interface WaveReschedule {
+  batchSize: number;
+  gapSeconds: number;
+  typeKey: string | null;
+}
+
+/** What a reschedule actually moved. `share` is the resulting throughput share (batch/gap, ripples per second). */
+export interface WaveRescheduleResult {
+  rescheduled: number;
+  batchSize: number;
+  gapSeconds: number;
+  share: number;
+}
+
 /** Read-only engine options for one worker instance (per-instance / env-tunable, not DB-stored). */
 export interface EngineInfo {
   instanceId: string;

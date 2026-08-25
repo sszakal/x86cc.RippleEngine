@@ -319,7 +319,16 @@ result:
 
 - The scheduler is **static**: once `schedule_order` is stamped it is never rebalanced, so thousands of jobs
   arriving at once can each sit one batch ahead of a newcomer (still far better than strict FIFO). A dynamic
-  fair queue would be a later phase.
+  fair queue would be a later phase. The single exception is the explicit, operator-driven **wave reschedule**
+  (`IEngineStore.RescheduleWaveAsync`, `POST /api/waves/{id}/reschedule`, and the control on the wave-detail
+  modal): it re-stamps one live wave's remaining `Pending` ripples with a new batch/gap so an already-fanned-out
+  job's share can be changed — batch/gap are baked into `schedule_order` at fan-out, so editing `type_schedule`
+  reaches only the *next* wave. The re-stamp is anchored at the wave's own head, so the wave keeps its place in
+  the global queue and only its density changes; it is `for update skip locked` (a claim in flight is stepped
+  around, never blocked) and advisory-locked against a concurrent reschedule. It runs as one transaction — what
+  makes `row_number()` a correct global ordinal, and equally the reason a chunked, desired-state variant is the
+  next phase for multi-million-ripple waves. `Running` ripples keep their old slot (as retry/recovery requeues
+  already do), and the new batch/gap is not sticky: a later in-flight expansion fans out un-throttled.
 - All workers claim off the same left edge of `ix_ripple_schedule_order`; `schedule_order` inserts land mid-index
   (interleaved by design), so it bloats more than a monotonic `created_at` index would — fine at POC scale.
 - Wave numbers are eventually-consistent (up to one `WaveStatsRefreshInterval` stale), the deliberate trade for

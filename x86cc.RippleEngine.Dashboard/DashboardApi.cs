@@ -214,6 +214,37 @@ public static class DashboardApi
 
         api.MapGet("/waves/{id:guid}/report.csv", (Guid id, IReportStore reports) => WaveReportCsv(id, reports));
 
+        // Re-stamp a LIVE wave's remaining pending ripples with a new batch/gap — the only wave-scoped write in
+        // this API (every other one is type_schedule-scoped). It exists because batch/gap are baked into
+        // schedule_order at fan-out: a settings edit changes the NEXT wave, never the 10M-ripple one already
+        // starving the cluster. The re-stamp is anchored at the wave's own head, so the wave holds its place in
+        // the global queue and only its share changes — raising the gap slows it without displacing other jobs.
+        api.MapPost("/waves/{id:guid}/reschedule", async (Guid id, WaveReschedule body, IEngineStore engine) =>
+        {
+            // Same floors as the settings PUT — batch/gap mean the same thing here, they are just applied to
+            // rows that already exist rather than to the ones the next fan-out will create.
+            if (body.BatchSize < 1)
+                return Results.BadRequest(new { error = "batchSize must be >= 1" });
+            if (body.GapSeconds <= 0)
+                return Results.BadRequest(new { error = "gapSeconds must be > 0" });
+
+            if (await engine.GetWaveAsync(id) is null)
+                return Results.NotFound();
+
+            // null ⇒ another reschedule holds the advisory lock. A 409 rather than a silent 0, so "someone else
+            // is doing this right now" is never mistaken for "your change applied to nothing".
+            if (await engine.RescheduleWaveAsync(id, body.BatchSize, body.GapSeconds, body.TypeKey) is not { } n)
+                return Results.Conflict(new { error = "another reschedule is in progress — retry in a moment" });
+
+            return Results.Ok(new
+            {
+                rescheduled = n,
+                batchSize = body.BatchSize,
+                gapSeconds = body.GapSeconds,
+                share = body.BatchSize / body.GapSeconds
+            });
+        });
+
         // ---- settings: the scheduler's per-type config (the one editable, DB-stored config) -------
         // ripple.type_schedule is the single source of truth for batch/gap/max_attempts. A reserved DEFAULT row
         // holds the fall-back every unconfigured type inherits; a per-type row overrides it. The dashboard can
@@ -356,6 +387,10 @@ public static class DashboardApi
 
     // The PUT body for a settings edit; max_attempts null ⇒ inherit the default row's ceiling.
     public sealed record TypeScheduleUpdate(int BatchSize, double GapSeconds, int? MaxAttempts);
+
+    // The POST body for an in-flight wave reschedule; type_key null ⇒ every type the wave still has pending
+    // (each re-stamped independently, anchored at its own head).
+    public sealed record WaveReschedule(int BatchSize, double GapSeconds, string? TypeKey);
 
     // The aggregated report CSV for a compacted wave — the ripple outcome data only (no wave-stats preamble;
     // the wave's numbers are on the wave row / UI). 404 if unknown; 202 until it's compacted.

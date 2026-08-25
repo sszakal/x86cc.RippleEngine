@@ -13,6 +13,8 @@ import {
   Wave,
   WaveActivityResponse,
   WaveFilter,
+  WaveReschedule,
+  WaveRescheduleResult,
   WavesResponse
 } from './models';
 
@@ -86,6 +88,15 @@ export class RippleApiService {
   resumeType(typeKey: string, rebase: boolean): Observable<void> {
     const params = new HttpParams().set('rebase', rebase);
     return this.http.post<void>(`${this.base}/settings/types/${encodeURIComponent(typeKey)}/resume`, null, { params });
+  }
+
+  /**
+   * Re-stamp a live wave's remaining pending ripples with a new batch/gap. Anchored at the wave's own head, so
+   * the wave holds its place in the global queue and only its throughput share changes — the only way to slow
+   * down (or speed up) a job that has already fanned out. 409 ⇒ another reschedule is in progress.
+   */
+  rescheduleWave(waveId: string, body: WaveReschedule): Observable<WaveRescheduleResult> {
+    return this.http.post<WaveRescheduleResult>(`${this.base}/waves/${waveId}/reschedule`, body);
   }
 
   /**

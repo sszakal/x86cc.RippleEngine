@@ -200,7 +200,14 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
   `Running`. A pure time-based reaper (age-only, owner-agnostic) is still a later, table-split phase.
 - The scheduler is **static**: once `schedule_order` is stamped it is never rebalanced, so thousands of jobs
   arriving at once can each put one batch ahead of a newcomer. Far better than strict FIFO (wait behind one
-  batch per job, not every task) but not a dynamic fair queue.
+  batch per job, not every task) but not a dynamic fair queue. The one **deliberate exception** is
+  `EngineStore.RescheduleWaveAsync` (`POST /api/waves/{id}/reschedule`): an explicit, operator-driven re-stamp
+  of one live wave's remaining `Pending` ripples with a new batch/gap, anchored at that wave's own head
+  (`ScheduleOrderSql.WaveHeadBaseExpr`) so the wave holds its queue position and only its share changes. It is
+  one `UPDATE` per `(wave_id, type_key)`, `for update skip locked` (never contends with a claim) and advisory-
+  locked (two overlapping reschedules would each skip the other's rows and re-stamp the leftovers from `k = 0`).
+  One transaction is what makes `row_number()` a correct global ordinal, and is also its ceiling — a chunked,
+  desired-state variant is the next phase. Neither `Running` ripples nor later continuations are covered.
 - All workers claim off the same left edge of `ix_ripple_schedule_order` (lowest `schedule_order`); `SKIP LOCKED`
   keeps them disjoint. `schedule_order` inserts land mid-index (interleaved by design), so that index bloats more
   than a monotonic `created_at` one would — fine at POC scale.

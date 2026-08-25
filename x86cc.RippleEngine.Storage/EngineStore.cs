@@ -124,6 +124,38 @@ public interface IEngineStore
     /// </summary>
     Task<int> ReconcilePauseTransitionsAsync(int chunkSize, int maxRowsPerPass, CancellationToken ct = default);
 
+    // ---- reschedule -----------------------------------------------------------------------------
+
+    /// <summary>
+    /// <b>Re-stamps</b> a live wave's remaining <c>Pending</c> ripples with a new
+    /// <paramref name="batchSize"/>/<paramref name="gapSeconds"/>, anchored at the wave's own current head
+    /// (<c>ScheduleOrderSql.WaveHeadBaseExpr</c>) — the one way to change an <b>already fanned-out</b> job's
+    /// throughput share (<c>≈ batch_size / gap_seconds</c>), since batch/gap are baked into
+    /// <c>schedule_order</c> at fan-out and editing <c>type_schedule</c> moves nothing that already exists.
+    /// The wave keeps its place in the global queue; only its density changes, so raising the gap stretches its
+    /// tail out and slows it down without displacing any other job. Each of the wave's <c>type_key</c>s is
+    /// re-stamped independently (the scheduling unit), or just <paramref name="typeKey"/> when given.
+    /// Returns the number of ripples re-stamped, or <c>null</c> if another reschedule holds the advisory lock.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>Never contends with the claim: the row selection is <c>for update skip locked</c>, so a ripple a
+    /// poll is claiming right now is skipped (it keeps its old slot and is leaving the queue anyway) and no
+    /// worker ever blocks on this.</item>
+    /// <item><c>Running</c> ripples are NOT covered, and a retry/recovery requeue deliberately keeps the old
+    /// <c>schedule_order</c> — so an in-flight ripple returns to its pre-reschedule position. Bounded by
+    /// <c>MaxConcurrency × instances</c>.</item>
+    /// <item>Not sticky: only the rows that exist now are re-stamped. A later in-flight expansion
+    /// (<c>Continue(context)</c>) fans out from <c>type_schedule</c> again, un-throttled.</item>
+    /// <item>One transaction, deliberately — it is what makes <c>row_number()</c> a correct global ordinal with
+    /// no chunk-chaining. <c>schedule_order</c> is indexed, so no update is HOT: every re-stamped row writes a
+    /// new heap tuple plus an entry in each ripple index. It blocks nothing, but over millions it is a long
+    /// transaction holding back the xmin horizon — a chunked, desired-state variant is the next phase.</item>
+    /// </list>
+    /// </remarks>
+    Task<int?> RescheduleWaveAsync(Guid waveId, int batchSize, double gapSeconds, string? typeKey = null,
+        CancellationToken ct = default);
+
     // ---- poll (heartbeat + claim, one round trip) -----------------------------------------------
 
     /// <summary>
@@ -206,6 +238,11 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
 
     // Distinct key so at most one instance runs the pause/resume reconcile at a time (ReportStore uses \x03).
     private const long PauseReconcileLockKey = 0x7269_7070_6C65_04L; // "ripple\x04"
+
+    // Serialises wave reschedules cluster-wide — see RescheduleWaveAsync for why they must not overlap. One
+    // global key rather than one per wave: it is a rare, interactive admin action, so the coarser lock costs
+    // nothing and keeps the key space next to its siblings.
+    private const long RescheduleLockKey = 0x7269_7070_6C65_05L; // "ripple\x05"
 
     // A type_key and its desired pause_state — the resuming set the reconcile drains.
     private readonly record struct TypeState(string TypeKey, string PauseState);
@@ -666,6 +703,82 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
         {
             await conn.ExecuteAsync(new CommandDefinition(
                 "select pg_advisory_unlock(@key)", new { key = PauseReconcileLockKey }));
+        }
+    }
+
+    // ---- reschedule -----------------------------------------------------------------------------
+    //
+    // The one exception to "schedule_order is stamped once and never rebalanced". Everything else that writes
+    // the key either stamps fresh rows (the two fan-out inserts) or re-admits parked ones (the resume rebase);
+    // this re-shapes rows that never left the queue. Safe because schedule_order carries no invariant beyond
+    // ordering: only the claim's `order by schedule_order` and the base expressions in ScheduleOrderSql read it,
+    // and both simply observe the new values. refresh_wave_stats() ignores it and compact_wave() only ever runs
+    // on terminal waves.
+
+    public async Task<int?> RescheduleWaveAsync(Guid waveId, int batchSize, double gapSeconds,
+        string? typeKey = null, CancellationToken ct = default)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+
+        // Two reschedules of the same wave MUST NOT overlap. Each takes `for update skip locked`, so the second
+        // would silently skip every row the first holds and re-stamp only the leftovers — from k = 0, collapsing
+        // them back onto the head slots, which is the opposite of what was asked for. try-lock, not lock: this
+        // is an interactive action, so a caller that loses the race is told immediately rather than queued.
+        var acquired = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "select pg_try_advisory_lock(@key)", new { key = RescheduleLockKey }, cancellationToken: ct));
+        if (!acquired)
+        {
+            return null;
+        }
+
+        try
+        {
+            // type_key IS the scheduling unit (batch/gap are per type), so a heterogeneous wave's types are
+            // re-stamped INDEPENDENTLY, each anchored at its own head — the same rule BaseExpr's remarks record
+            // for fan-out, where taking one base across a whole wave serialised a multi-spec dispatch.
+            // Restricted to state='Pending' by the same query that finds them, so a wave whose type is currently
+            // paused (rows parked in 'Paused') reports 0 rather than half-applying: a later resume-with-rebase
+            // re-stamps that work anyway, and the returned count makes the no-op visible instead of silent.
+            IReadOnlyList<string> types = typeKey is not null
+                ? [typeKey]
+                : (await conn.QueryAsync<string>(new CommandDefinition(
+                    $"select distinct type_key from {S}.ripple where wave_id = @waveId and state = 'Pending'",
+                    new { waveId }, cancellationToken: ct))).AsList();
+
+            var rescheduled = 0;
+            foreach (var type in types)
+            {
+                rescheduled += await conn.ExecuteAsync(new CommandDefinition(
+                    $"""
+                     with cfg as (
+                         select @batchSize::int as bs, @gapSeconds::double precision as gp
+                     ),
+                     head as (
+                         select {ScheduleOrderSql.WaveHeadBaseExpr("@waveId", "@typeKey")} as h
+                     ),
+                     batch as (
+                         select id, schedule_order from {S}.ripple
+                         where wave_id = @waveId and type_key = @typeKey and state = 'Pending'
+                         order by schedule_order, id
+                         for update skip locked
+                     ),
+                     seq as (
+                         select id, (row_number() over (order by schedule_order, id) - 1) as k from batch
+                     )
+                     update {S}.ripple r
+                     set schedule_order = (select h from head) + (seq.k / (select bs from cfg)) * (select gp from cfg)
+                     from seq
+                     where r.id = seq.id
+                     """,
+                    new { waveId, typeKey = type, batchSize, gapSeconds }, cancellationToken: ct));
+            }
+
+            return rescheduled;
+        }
+        finally
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "select pg_advisory_unlock(@key)", new { key = RescheduleLockKey }));
         }
     }
 

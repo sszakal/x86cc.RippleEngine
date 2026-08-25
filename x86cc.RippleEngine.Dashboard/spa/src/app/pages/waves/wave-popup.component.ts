@@ -1,5 +1,6 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Component, EventEmitter, Input, OnDestroy, Output, inject, signal } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Component, EventEmitter, Input, OnDestroy, Output, WritableSignal, computed, inject, signal } from '@angular/core';
 import { RippleApiService } from '../../core/ripple-api.service';
 import { Wave, WaveStatus } from '../../core/models';
 import { statusClass } from './wave-palette';
@@ -71,6 +72,53 @@ import { statusClass } from './wave-palette';
             <div><dt class="text-gray-500">Completed</dt><dd class="font-medium text-gray-900">{{ w.completedAt ? (w.completedAt | date: 'short') : '—' }}</dd></div>
             <div><dt class="text-gray-500">Compacted</dt><dd class="font-medium text-gray-900">{{ w.compactedAt ? (w.compactedAt | date: 'short') : '—' }}</dd></div>
           </dl>
+          <!-- Reschedule: the only way to re-shape a job that has ALREADY fanned out. batch/gap are baked into
+               each ripple's schedule_order at creation, so editing the type's config on the Settings page moves
+               nothing here — it reaches the next wave only. Offered while there is still pending work to
+               re-spread; in-flight ripples finish on their old slot either way. -->
+          @if (!isTerminal(w.status) && w.pending > 0) {
+            <div class="mt-5 border-t border-gray-100 pt-4">
+              @if (!rescheduleOpen()) {
+                <button class="text-xs font-medium text-brand-600 hover:text-brand-700" (click)="openReschedule()">
+                  Reschedule remaining ripples…
+                </button>
+              } @else {
+                <div class="mb-2 text-xs text-gray-500">
+                  Re-spreads the {{ w.pending | number }} still-pending ripples. The wave keeps its place in the
+                  queue — only its share of the cluster changes.
+                </div>
+                <div class="flex flex-wrap items-end gap-3">
+                  <label class="text-xs text-gray-500">
+                    Batch size
+                    <input type="number" min="1" class="mt-1 block w-20 rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                           [value]="batchSize()" (input)="editNum($event, batchSize)" />
+                  </label>
+                  <label class="text-xs text-gray-500">
+                    Gap (s)
+                    <input type="number" min="0" step="0.1" class="mt-1 block w-20 rounded border border-gray-300 px-2 py-1 text-sm text-gray-900"
+                           [value]="gapSeconds()" (input)="editNum($event, gapSeconds)" />
+                  </label>
+                  <div class="pb-1 text-xs text-gray-500">
+                    Share <span class="font-medium text-gray-700">{{ share() != null ? (share()! | number: '1.0-3') + ' /s' : '—' }}</span>
+                  </div>
+                  <button class="ml-auto rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                          [disabled]="applying() || share() == null" (click)="applyReschedule(w)">
+                    {{ applying() ? 'Applying…' : 'Apply' }}
+                  </button>
+                  <button class="rounded-md px-2 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50" (click)="rescheduleOpen.set(false)">
+                    Cancel
+                  </button>
+                </div>
+                @if (rescheduleMsg(); as msg) {
+                  <div class="mt-2 text-xs text-emerald-600">{{ msg }}</div>
+                }
+                @if (rescheduleError(); as err) {
+                  <div class="mt-2 text-xs text-rose-600">{{ err }}</div>
+                }
+              }
+            </div>
+          }
+
           <div class="mt-6 flex items-center justify-end gap-2">
             <button class="btn" (click)="closed.emit()">Close</button>
             @if (w.rippleCount > 0 && w.compactedAt) {
@@ -92,6 +140,22 @@ export class WavePopupComponent implements OnDestroy {
   readonly wave = signal<Wave | null>(null);
   readonly downloading = signal(false);
 
+  // Reschedule panel. batch/gap start at 1/1 rather than the wave's current values: those are per type_key in
+  // ripple.type_schedule and the wave projection doesn't carry them, and guessing would be worse than asking.
+  readonly rescheduleOpen = signal(false);
+  readonly batchSize = signal(1);
+  readonly gapSeconds = signal(1);
+  readonly applying = signal(false);
+  readonly rescheduleMsg = signal<string | null>(null);
+  readonly rescheduleError = signal<string | null>(null);
+
+  /** The resulting throughput share (ripples/sec), or null while the inputs aren't a usable pair. */
+  readonly share = computed(() => {
+    const batch = this.batchSize();
+    const gap = this.gapSeconds();
+    return batch >= 1 && gap > 0 ? batch / gap : null;
+  });
+
   // Auto-refresh cadence. null = off; polling only runs while the wave is non-terminal.
   readonly refreshOptions: ReadonlyArray<{ label: string; value: number | null }> = [
     { label: '2s', value: 2 },
@@ -109,6 +173,9 @@ export class WavePopupComponent implements OnDestroy {
     }
     this.currentId = id;
     this.wave.set(null);
+    this.rescheduleOpen.set(false); // never carry one wave's half-typed reschedule over to another
+    this.rescheduleMsg.set(null);
+    this.rescheduleError.set(null);
     this.refresh(); // fetch fresh detail, then poll on cadence
     this.startPolling();
   }
@@ -130,6 +197,41 @@ export class WavePopupComponent implements OnDestroy {
 
   progress(w: Wave): number {
     return w.rippleCount > 0 ? Math.round((w.succeeded * 100) / w.rippleCount) : 0;
+  }
+
+  openReschedule(): void {
+    this.rescheduleMsg.set(null);
+    this.rescheduleError.set(null);
+    this.rescheduleOpen.set(true);
+  }
+
+  editNum(event: Event, target: WritableSignal<number>): void {
+    target.set(Number((event.target as HTMLInputElement).value));
+  }
+
+  applyReschedule(w: Wave): void {
+    const share = this.share();
+    if (share == null) {
+      return;
+    }
+    this.applying.set(true);
+    this.rescheduleMsg.set(null);
+    this.rescheduleError.set(null);
+    // typeKey null ⇒ every type the wave still has pending, each re-stamped independently at its own head.
+    this.api.rescheduleWave(w.id, { batchSize: this.batchSize(), gapSeconds: this.gapSeconds(), typeKey: null }).subscribe({
+      next: (result) => {
+        this.applying.set(false);
+        this.rescheduleMsg.set(
+          `${result.rescheduled.toLocaleString()} ripples re-stamped — new share ${result.share} /s.`
+        );
+        this.refresh(); // pending/running are unchanged by this, but the wave may have moved on meanwhile
+      },
+      error: (err: HttpErrorResponse) => {
+        this.applying.set(false);
+        // 409 = another reschedule holds the advisory lock; the API sends a human message in `error.error`.
+        this.rescheduleError.set(err.error?.error ?? 'Reschedule failed.');
+      }
+    });
   }
 
   downloadReport(w: Wave): void {
