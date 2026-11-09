@@ -220,16 +220,39 @@ public sealed class FacadeTests
         }
     }
 
-    /// <summary>A zero error delay would spin the dispatcher in a hot loop of errors against a down database, so
-    /// it is refused at startup.</summary>
-    [Fact]
-    public void a_non_positive_dispatch_error_delay_is_refused()
+    /// <summary>Every startup rule, one at a time: each nonsense value is refused naming the option, instead of
+    /// degrading into a silent runtime failure (a division by zero in compaction, a hot error loop, a cluster that
+    /// keeps declaring live instances dead).</summary>
+    [Theory]
+    [InlineData(nameof(RippleEngineOptions.MaxConcurrency))]
+    [InlineData(nameof(RippleEngineOptions.PrefetchFactor))]
+    [InlineData(nameof(RippleEngineOptions.ClaimBatchSize))]
+    [InlineData(nameof(RippleEngineOptions.ReportChunkSize))]
+    [InlineData(nameof(RippleEngineOptions.SucceededBatchSize))]
+    [InlineData(nameof(RippleEngineOptions.FailedBatchSize))]
+    [InlineData(nameof(RippleEngineOptions.CompactionMaxWavesPerPass))]
+    [InlineData(nameof(RippleEngineOptions.PauseReconcileChunkSize))]
+    [InlineData(nameof(RippleEngineOptions.PauseReconcileMaxRowsPerPass))]
+    [InlineData(nameof(RippleEngineOptions.ExecutionTimeout))]
+    [InlineData(nameof(RippleEngineOptions.DispatchErrorDelay))]
+    [InlineData(nameof(RippleEngineOptions.ShutdownDrainGrace))]
+    [InlineData(nameof(RippleEngineOptions.HeartbeatTimeout))] // not above HeartbeatInterval
+    public void a_nonsense_engine_option_is_refused_at_startup(string option)
     {
-        using var host = Build(o => o.DispatchErrorDelay = TimeSpan.Zero);
+        var property = typeof(RippleEngineOptions).GetProperty(option)!;
+        using var host = Build(o => property.SetValue(o, property.PropertyType == typeof(int) ? 0 : TimeSpan.Zero));
 
         var ex = Should.Throw<OptionsValidationException>(
             () => host.Services.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
-        ex.Message.ShouldContain(nameof(RippleEngineOptions.DispatchErrorDelay));
+        ex.Message.ShouldContain(option);
+    }
+
+    [Fact]
+    public void the_default_engine_options_are_valid()
+    {
+        using var host = Build();
+
+        Should.NotThrow(() => host.Services.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
     }
 
     // A deterministic "something else, but still valid": every knob is a positive count or duration, so nudging

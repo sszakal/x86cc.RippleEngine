@@ -1,3 +1,4 @@
+using Dapper;
 using Shouldly;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Storage;
@@ -240,6 +241,105 @@ public sealed class PauseTests : RippleTestBase
         (await CountAsync("type_key = @k and state = 'Paused'", TypeA)).ShouldBe(10);
         (await CountAsync("type_key = @k and state = 'Pending'", TypeA)).ShouldBe(0);
         (await PauseStateCountAsync(TypeA, "paused")).ShouldBe(1);
+    }
+
+    /// <summary>
+    /// A reschedule and a pause (then a resume) of the SAME type, genuinely concurrent, round after round. Both
+    /// select rows with <c>for update skip locked</c>, so neither ever waits on the other — the risk is not a
+    /// deadlock but a ripple left behind: skipped by a reconcile pass while a reschedule held it, and then never
+    /// parked (a "paused" type that still has claimable work) or never un-parked (a wave that can't complete).
+    /// Whatever the interleaving, every ripple must converge to the desired state, and the claim must drain the
+    /// exact seeded set, once each, in schedule_order.
+    /// </summary>
+    [Fact]
+    public async Task a_reschedule_racing_a_pause_and_a_resume_of_the_same_type_loses_nothing()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        const int count = 3_000;
+        await SeedRipplesOfTypeAsync(wave.Id, count, "TypeA");
+        await SeedRipplesOfTypeAsync(wave.Id, 50, "TypeB"); // a bystander type that must stay claimable
+
+        await using var conn = await Db.OpenConnectionAsync();
+        var seeded = (await conn.QueryAsync<Guid>(
+            "select id from ripple.ripple where type_key = @k", new { k = TypeA })).ToHashSet();
+        var overlapped = 0;
+
+        for (var round = 0; round < 4; round++)
+        {
+            await Engine.PauseTypeAsync(TypeA);
+            overlapped += await RaceAsync(wave.Id);
+            (await CountAsync("type_key = @k and state = 'Paused'", TypeA)).ShouldBe(count, $"round {round}: pause");
+            (await CountAsync("type_key = @k and state = 'Pending'", TypeA)).ShouldBe(0);
+            (await PauseStateCountAsync(TypeA, "paused")).ShouldBe(1);
+
+            await Engine.ResumeTypeAsync(TypeA, rebase: round % 2 == 0);
+            overlapped += await RaceAsync(wave.Id);
+            (await CountAsync("type_key = @k and state = 'Pending'", TypeA)).ShouldBe(count, $"round {round}: resume");
+            (await CountAsync("type_key = @k and state = 'Paused'", TypeA)).ShouldBe(0);
+            (await PauseStateCountAsync(TypeA, "active")).ShouldBe(1);
+        }
+
+        // Proof the race was real: some reschedules re-stamped rows while a reconcile was still moving the type.
+        overlapped.ShouldBeGreaterThan(0, "no reschedule ever overlapped a reconcile — the test raced nothing");
+        (await CountAsync("type_key = @k and state = 'Pending'", TypeB)).ShouldBe(50);
+
+        // The whole set is claimable exactly once — nothing lost, nothing duplicated — and in schedule_order: the
+        // claim takes the LOWEST slots, so each batch sorts at or after the one before it. (Within one batch the
+        // rows come back in no particular order — the claim's final select has no order by — so compare batches.)
+        var orderOf = (await conn.QueryAsync<(Guid Id, double Order)>(
+                "select id, schedule_order from ripple.ripple where wave_id = @id", new { id = wave.Id }))
+            .ToDictionary(r => r.Id, r => r.Order);
+        var claimed = new List<Guid>();
+        var previousMax = double.MinValue;
+        while (await Engine.PollAsync(100, "inst-1", 0) is { Count: > 0 } batch)
+        {
+            var orders = batch.Select(r => orderOf[r.Id]).ToList();
+            orders.Min().ShouldBeGreaterThanOrEqualTo(previousMax, "a later claim took an earlier slot");
+            previousMax = orders.Max();
+            claimed.AddRange(batch.Where(r => r.TypeKey == TypeA).Select(r => r.Id));
+        }
+
+        claimed.Count.ShouldBe(count);
+        claimed.ToHashSet().SetEquals(seeded).ShouldBeTrue("the claim must drain exactly the seeded ripples");
+    }
+
+    /// <summary>
+    /// Drives the pause reconcile to completion in small chunks while a loop keeps re-stamping the same wave's
+    /// type, then lets the loop finish and drains once more — as the next <c>PauseTransitionLoop</c> tick would — to
+    /// pick up every row a reschedule's lock made a pass skip. Returns how many reschedules moved rows while the
+    /// reconcile was still running.
+    /// </summary>
+    private async Task<int> RaceAsync(Guid waveId)
+    {
+        var reconciling = true;
+        var overlapped = 0;
+        var reschedules = Task.Run(async () =>
+        {
+            for (var i = 0; Volatile.Read(ref reconciling); i++)
+            {
+                var moved = await Engine.RescheduleWaveAsync(waveId, batchSize: 3 + i % 5, gapSeconds: 1 + i * 0.25,
+                    typeKey: TypeA);
+                if (moved > 0 && Volatile.Read(ref reconciling))
+                {
+                    overlapped++;
+                }
+            }
+        });
+
+        // Small chunks and passes: the reconcile is many short transactions interleaved with the reschedules.
+        while (await ReconcilePauseTransitionsAsync(chunkSize: 50, maxRowsPerPass: 200) > 0)
+        {
+        }
+
+        Volatile.Write(ref reconciling, false);
+        await reschedules;
+
+        while (await ReconcilePauseTransitionsAsync(chunkSize: 50, maxRowsPerPass: 200) > 0)
+        {
+        }
+
+        return overlapped;
     }
 
     private async Task<long> CountAsync(string where, string? typeKey) =>

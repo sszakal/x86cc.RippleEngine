@@ -3,7 +3,6 @@ using Dapper;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Testcontainers.PostgreSql;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.EntityFrameworkCore;
 using x86cc.RippleEngine.Engine;
@@ -14,15 +13,12 @@ using x86cc.RippleEngine.Storage;
 namespace x86cc.RippleEngine.Tests;
 
 /// <summary>
-/// One real Postgres (Testcontainers) per test class, with the <c>ripple</c> schema migrated and the two
-/// stores wired. <see cref="ResetAsync"/> truncates everything so each test starts clean. Helpers seed
-/// waves and ripples the way the fan-out would.
+/// A fresh, migrated Postgres database per test — cloned from a template on one container shared by the whole run
+/// (see <see cref="SharedPostgres"/>) — with the stores wired. <see cref="ResetAsync"/> truncates everything, so a
+/// test can also start over mid-way. Helpers seed waves and ripples the way the fan-out would.
 /// </summary>
 public abstract class RippleTestBase : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _postgres =
-        new PostgreSqlBuilder("postgres:17").Build();
-
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private IHost _container = default!;
@@ -40,12 +36,11 @@ public abstract class RippleTestBase : IAsyncLifetime
 
     public virtual async Task InitializeAsync()
     {
-        await _postgres.StartAsync();
-        ConnectionString = _postgres.GetConnectionString();
+        ConnectionString = await SharedPostgres.CreateDatabaseAsync();
 
         // Storage-level tests need the stores and the fan-out generators, not the engine — so the same facade
         // every consumer uses, in its creation-side shape. This host is only a container: it is never started,
-        // hence AutoMigrate off and the explicit MigrateRipple() below.
+        // and the database is cloned already migrated, hence AutoMigrate off.
         var builder = Host.CreateEmptyApplicationBuilder(null);
         builder.Services.AddLogging();
         builder.AddRippleEngine(o =>
@@ -58,13 +53,12 @@ public abstract class RippleTestBase : IAsyncLifetime
         });
 
         _container = builder.Build();
-        Storage.MigrateRipple();
     }
 
     public virtual async Task DisposeAsync()
     {
-        _container.Dispose();
-        await _postgres.DisposeAsync();
+        await ((IAsyncDisposable)_container).DisposeAsync();
+        await SharedPostgres.DropDatabaseAsync(ConnectionString);
     }
 
     /// <summary>

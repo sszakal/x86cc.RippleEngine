@@ -45,10 +45,13 @@ dotnet test x86cc.RippleEngine.Tests/x86cc.RippleEngine.Tests.csproj \
 dotnet run --project x86cc.Ripple.Sample.AppHost
 ```
 
-Tests use **xUnit + Shouldly** and spin up a **real Postgres via Testcontainers** (`postgres:17`) — the
-fan-out and claim are raw SQL, so **Docker/Podman must be running** and there is no in-memory fallback. The
-Testcontainers suite is run **serially** (`[assembly: CollectionBehavior(DisableTestParallelization = true)]`)
-because concurrent containers overload the local runtime.
+Tests use **xUnit + Shouldly** and run against a **real Postgres via Testcontainers** (`postgres:17`) — the
+fan-out and claim are raw SQL, so **Docker/Podman must be running** and there is no in-memory fallback. One
+container serves the whole run: every `RippleTestBase` test gets its **own database**, cloned from a migrated
+template (`SharedPostgres`), so tests stay fully isolated without a container or a migration each. The suite
+still runs **serially** (`[assembly: CollectionBehavior(DisableTestParallelization = true)]`) because the engine
+tests are timing-sensitive. Pure logic (reports, keys, guards, options, retry policy) and timing
+(`ClockDrivenTests`, on a `FakeTimeProvider`) are tested without a database.
 
 **Gotcha:** `dotnet run --no-build --project <sample>` uses that project's OWN `bin/` copy of the engine
 DLLs. After editing `Engine`/`Storage`, rebuild the whole solution (or the sample project), not just the

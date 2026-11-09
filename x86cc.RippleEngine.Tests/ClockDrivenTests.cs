@@ -258,21 +258,14 @@ public sealed class ClockDrivenTests
         {
             InstanceId = "clock-test", MaxConcurrency = 1, DispatchErrorDelay = delay
         });
-        var store = DownEngineStore.Create(_time);
-        var registry = new RippleHandlerRegistry();
-        var inFlight = new InFlightTracker();
-        var pipeline = new ExecutionPipeline(options, registry, new ServiceCollection().BuildServiceProvider()
-                .GetRequiredService<IServiceScopeFactory>(), inFlight, new ExponentialRetryPolicy(options),
-            BuildSettlement(options, inFlight), new RippleMetrics(), _time, NullLogger<ExecutionPipeline>.Instance);
-        using var dispatcher = new Dispatcher(pipeline, registry, store, new RippleMetrics(), options,
-            new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
-        var down = (DownEngineStore)(object)store;
+        var down = ScriptedEngineStore.Create(_time, _ => throw new InvalidOperationException("database is down"));
+        using var dispatcher = BuildDispatcher(options, down);
 
         await dispatcher.StartAsync(CancellationToken.None);
 
         // The poll failed and the fallback beat was tried; wait until the error delay is actually armed.
         await WaitUntilAsync(() => down.Calls("BeatAsync") == 1);
-        await WaitUntilAsync(() => _time.TimersCreated > down.TimersAtLastBeat);
+        await WaitUntilAsync(() => _time.TimersCreated > down.TimersAtLastCall);
         down.Calls("PollAsync").ShouldBe(1);
 
         _time.Advance(delay - TimeSpan.FromTicks(1));
@@ -280,6 +273,39 @@ public sealed class ClockDrivenTests
         _time.Advance(TimeSpan.FromTicks(1));
         await WaitUntilAsync(() => down.Calls("PollAsync") == 2);
 
+        await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>An empty queue backs the poll cadence off — doubling from MinPollDelay up to MaxPollDelay — so an
+    /// idle cluster stops hammering the DB. Each step is checked to the tick.</summary>
+    [Fact]
+    public async Task empty_polls_double_the_poll_delay_up_to_the_ceiling()
+    {
+        var options = Options.Create(new RippleEngineOptions
+        {
+            InstanceId = "clock-test", MaxConcurrency = 1,
+            MinPollDelay = TimeSpan.FromMilliseconds(100), MaxPollDelay = TimeSpan.FromMilliseconds(1000)
+        });
+        var idle = ScriptedEngineStore.Create(_time, method => method == "PollAsync"
+            ? Task.FromResult<IReadOnlyList<ClaimedRipple>>([])
+            : Task.CompletedTask);
+        using var dispatcher = BuildDispatcher(options, idle);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+
+        var polls = 1;
+        foreach (var ms in new[] { 200, 400, 800, 1000, 1000 })
+        {
+            await WaitUntilAsync(() => idle.Calls("PollAsync") == polls);
+            await WaitUntilAsync(() => _time.TimersCreated > idle.TimersAtLastCall); // the idle delay is armed
+
+            _time.Advance(TimeSpan.FromMilliseconds(ms) - TimeSpan.FromTicks(1));
+            idle.Calls("PollAsync").ShouldBe(polls, $"no poll before the {ms}ms idle delay");
+            _time.Advance(TimeSpan.FromTicks(1));
+            polls++;
+        }
+
+        await WaitUntilAsync(() => idle.Calls("PollAsync") == polls);
         await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
@@ -334,6 +360,18 @@ public sealed class ClockDrivenTests
         }
 
         return pipeline;
+    }
+
+    /// <summary>A real dispatcher over a real (handler-less) pipeline, talking to a scripted store.</summary>
+    private Dispatcher BuildDispatcher(IOptions<RippleEngineOptions> options, ScriptedEngineStore store)
+    {
+        var registry = new RippleHandlerRegistry();
+        var inFlight = new InFlightTracker();
+        var scopes = new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        var pipeline = new ExecutionPipeline(options, registry, scopes, inFlight, new ExponentialRetryPolicy(options),
+            BuildSettlement(options, inFlight), new RippleMetrics(), _time, NullLogger<ExecutionPipeline>.Instance);
+        return new Dispatcher(pipeline, registry, store.AsEngineStore, new RippleMetrics(), options,
+            new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
     }
 
     private SettlementWriter BuildSettlement(IOptions<RippleEngineOptions> options, InFlightTracker inFlight)
@@ -439,21 +477,27 @@ public sealed class ClockDrivenTests
         }
     }
 
-    /// <summary>An <see cref="IEngineStore"/> for a database that is down: every call throws. A proxy rather than
-    /// a hand-written fake, because the dispatcher only needs the calls to fail and be counted.</summary>
-    public class DownEngineStore : DispatchProxy
+    /// <summary>
+    /// An <see cref="IEngineStore"/> whose every call is answered by one responder (by method name) and counted.
+    /// A proxy rather than a hand-written fake of the whole interface: the dispatcher only polls and beats.
+    /// </summary>
+    public class ScriptedEngineStore : DispatchProxy
     {
         private readonly ConcurrentDictionary<string, int> _calls = new();
         private CountingTimeProvider _time = default!;
+        private Func<string, object?> _respond = default!;
 
-        /// <summary>The fake clock's timer count when the last heartbeat was attempted: any timer after that
-        /// is the error delay.</summary>
-        public int TimersAtLastBeat { get; private set; }
+        internal IEngineStore AsEngineStore => (IEngineStore)(object)this;
 
-        internal static IEngineStore Create(CountingTimeProvider time)
+        /// <summary>The fake clock's timer count at the last store call: a timer created after it is the delay
+        /// the dispatcher armed in response.</summary>
+        public int TimersAtLastCall { get; private set; }
+
+        internal static ScriptedEngineStore Create(CountingTimeProvider time, Func<string, object?> respond)
         {
-            var store = Create<IEngineStore, DownEngineStore>();
-            ((DownEngineStore)(object)store)._time = time;
+            var store = (ScriptedEngineStore)(object)Create<IEngineStore, ScriptedEngineStore>();
+            store._time = time;
+            store._respond = respond;
             return store;
         }
 
@@ -462,13 +506,9 @@ public sealed class ClockDrivenTests
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             var name = targetMethod!.Name;
-            if (name == "BeatAsync")
-            {
-                TimersAtLastBeat = _time.TimersCreated;
-            }
-
+            TimersAtLastCall = _time.TimersCreated;
             _calls.AddOrUpdate(name, 1, (_, n) => n + 1);
-            throw new InvalidOperationException("database is down");
+            return _respond(name);
         }
     }
 
