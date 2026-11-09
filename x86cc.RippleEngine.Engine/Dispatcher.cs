@@ -27,6 +27,7 @@ internal sealed class Dispatcher(
     RippleMetrics metrics,
     IOptions<RippleEngineOptions> options,
     IHostApplicationLifetime lifetime,
+    TimeProvider time,
     ILogger<Dispatcher> logger) : BackgroundService
 {
     private readonly RippleEngineOptions _options = options.Value;
@@ -83,20 +84,20 @@ internal sealed class Dispatcher(
                 try
                 {
                     var capacity = pipeline.AvailableCapacity;
-                    var beatDue = DateTimeOffset.UtcNow - lastBeat >= _options.HeartbeatInterval;
+                    var beatDue = time.GetUtcNow() - lastBeat >= _options.HeartbeatInterval;
 
                     if (capacity <= 0 && !beatDue)
                     {
                         // Pipeline full — re-check for a freed slot promptly (the prefetch buffer keeps the
                         // execute block busy meanwhile), no DB round trip.
-                        await Task.Delay(PipelineFullRecheck, stoppingToken);
+                        await Task.Delay(PipelineFullRecheck, time, stoppingToken);
                         continue;
                     }
 
                     // One round trip: heartbeat + claim up to free capacity (may be 0, still beats).
                     var limit = Math.Min(capacity, _options.ClaimBatchSize);
                     var claimed = await PollAndDispatchAsync(limit, stoppingToken);
-                    lastBeat = DateTimeOffset.UtcNow;
+                    lastBeat = time.GetUtcNow();
 
                     // Keep the pipeline saturated: if we filled our capacity there is likely more, so poll
                     // again immediately (no gap). Only back off when the queue actually ran dry; a partial
@@ -127,7 +128,7 @@ internal sealed class Dispatcher(
 
                     if (idleDelay > TimeSpan.Zero)
                     {
-                        await Task.Delay(idleDelay, stoppingToken);
+                        await Task.Delay(idleDelay, time, stoppingToken);
                     }
                 }
                 catch (OperationCanceledException)
@@ -143,7 +144,7 @@ internal sealed class Dispatcher(
                     try
                     {
                         await engineStore.BeatAsync(_options.InstanceId, pipeline.ExecutingCount, stoppingToken);
-                        lastBeat = DateTimeOffset.UtcNow;
+                        lastBeat = time.GetUtcNow();
                     }
                     catch (Exception beatError)
                     {
@@ -158,7 +159,7 @@ internal sealed class Dispatcher(
                     // shutdown. Swallow cancellation specifically; the while condition then exits the loop.
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                        await Task.Delay(TimeSpan.FromSeconds(1), time, stoppingToken);
                     }
                     catch (OperationCanceledException)
                     {

@@ -25,6 +25,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     protected sealed record Spec(string Discriminator, string DataSql, NpgsqlCommand? Command);
 
     private readonly RippleDataSource _dataSource;
+    private readonly TimeProvider _time;
     private readonly string? _name;
     private readonly string? _waveType;
     private readonly string? _wavePayloadJson;
@@ -33,10 +34,11 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     private readonly bool _continueExisting;
     private readonly List<Spec> _specs = new();
 
-    protected WaveBuilderBase(RippleDataSource dataSource, string? name, string? waveType,
+    protected WaveBuilderBase(RippleDataSource dataSource, TimeProvider time, string? name, string? waveType,
         string? wavePayloadJson, Guid waveId, Guid? parentRippleId, bool continueExisting)
     {
         _dataSource = dataSource;
+        _time = time;
         _name = name;
         _waveType = waveType;
         _wavePayloadJson = wavePayloadJson;
@@ -118,7 +120,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     private async Task<Wave> CreateWaveAsync(NpgsqlConnection conn, NpgsqlTransaction tx, long total,
         CancellationToken ct)
     {
-        var createdAt = DateTimeOffset.UtcNow;
+        var createdAt = _time.GetUtcNow();
         // Born-complete: a fan-out whose source matched zero rows is a job with nothing to do — persist it
         // already Completed (audit record, flows through compaction/retention) rather than a zero-ripple Active
         // wave that, because refresh_wave_stats() requires ripple_count > 0, would never drain.

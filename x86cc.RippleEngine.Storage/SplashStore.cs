@@ -50,7 +50,7 @@ public interface ISplashStore
     Task FailRipplesAsync(IReadOnlyList<RippleFailure> batch, string instanceId, CancellationToken ct = default);
 }
 
-internal sealed class SplashStore(RippleDataSource dataSource) : ISplashStore
+internal sealed class SplashStore(RippleDataSource dataSource, TimeProvider time) : ISplashStore
 {
     private const string S = M0001_Schema.SchemaName;
 
@@ -180,7 +180,7 @@ internal sealed class SplashStore(RippleDataSource dataSource) : ISplashStore
 
     // One round trip for the whole settlement batch: unnest the parallel column arrays into a set the INSERT
     // reads from, instead of a statement per ripple.
-    private static Task InsertSplashesAsync(NpgsqlConnection conn, System.Data.Common.DbTransaction tx,
+    private Task InsertSplashesAsync(NpgsqlConnection conn, System.Data.Common.DbTransaction tx,
         IReadOnlyList<SplashRow> rows, CancellationToken ct)
     {
         if (rows.Count == 0)
@@ -193,7 +193,7 @@ internal sealed class SplashStore(RippleDataSource dataSource) : ISplashStore
         // (250ms doubling to 10s), so a `now` taken here would fold that latency into every duration_ms and,
         // through compaction, into the avg_ms/avg_duration_ms averages documented as execution time. Falls back
         // to write time only for callers that don't stamp it.
-        var writtenAt = DateTimeOffset.UtcNow;
+        var writtenAt = time.GetUtcNow();
         return conn.ExecuteAsync(new CommandDefinition(
             $"""
              insert into {S}.splash (id, ripple_id, wave_id, attempt, claimed_at, started_at, ended_at, outcome, duration_ms, report)

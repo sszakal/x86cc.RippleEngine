@@ -16,6 +16,7 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Shouldly"/>
+        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing"/>
         <PackageReference Include="Testcontainers.PostgreSql"/>
         <PackageReference Include="Dapper"/>
         <PackageReference Include="Marten"/>

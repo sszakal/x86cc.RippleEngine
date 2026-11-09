@@ -13,7 +13,7 @@ namespace x86cc.RippleEngine.Engine;
 /// The interval is the gap BETWEEN ticks (delay, then tick), not a fixed rate: a slow tick pushes the next one
 /// back rather than queueing a catch-up burst, which is what a <see cref="PeriodicTimer"/> would do.
 /// </remarks>
-internal abstract class PeriodicLoop(TimeSpan interval, ILogger logger) : BackgroundService
+internal abstract class PeriodicLoop(TimeSpan interval, TimeProvider time, ILogger logger) : BackgroundService
 {
     /// <summary>The loop's logger (its concrete type's category), for logging from <see cref="TickAsync"/>.</summary>
     protected ILogger Logger { get; } = logger;
@@ -30,7 +30,7 @@ internal abstract class PeriodicLoop(TimeSpan interval, ILogger logger) : Backgr
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                await Task.Delay(interval, stoppingToken);
+                await Task.Delay(interval, time, stoppingToken);
 
                 try
                 {

@@ -236,7 +236,7 @@ public interface IEngineStore
         CancellationToken ct = default);
 }
 
-internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
+internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time) : IEngineStore
 {
     private const string S = M0001_Schema.SchemaName;
 
@@ -262,7 +262,7 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
     public async Task<Wave> CreateWaveAsync(Wave wave, CancellationToken ct = default)
     {
         wave.Id = wave.Id == Guid.Empty ? Guid.NewGuid() : wave.Id;
-        wave.CreatedAt = wave.CreatedAt == default ? DateTimeOffset.UtcNow : wave.CreatedAt;
+        wave.CreatedAt = wave.CreatedAt == default ? time.GetUtcNow() : wave.CreatedAt;
         wave.Status = WaveStatus.Active;
 
         await using var conn = await dataSource.OpenConnectionAsync(ct);
@@ -381,7 +381,7 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
         CancellationToken ct = default)
     {
         wave.Id = wave.Id == Guid.Empty ? Guid.NewGuid() : wave.Id;
-        wave.CreatedAt = wave.CreatedAt == default ? DateTimeOffset.UtcNow : wave.CreatedAt;
+        wave.CreatedAt = wave.CreatedAt == default ? time.GetUtcNow() : wave.CreatedAt;
         var count = seeds.Count;
         wave.RippleCount = count;
         wave.Pending = count;

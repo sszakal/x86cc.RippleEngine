@@ -19,8 +19,9 @@ internal sealed class RecoveryLoop(
     IEngineStore engine,
     ExecutionPipeline pipeline,
     IOptions<RippleEngineOptions> options,
+    TimeProvider time,
     ILogger<RecoveryLoop> logger)
-    : PeriodicLoop(options.Value.RecoveryInterval, logger)
+    : PeriodicLoop(options.Value.RecoveryInterval, time, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 

@@ -15,8 +15,9 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class CompactionLoop(
     IReportStore reports,
     IOptions<RippleEngineOptions> options,
+    TimeProvider time,
     ILogger<CompactionLoop> logger)
-    : PeriodicLoop(options.Value.CompactionInterval, logger)
+    : PeriodicLoop(options.Value.CompactionInterval, time, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 

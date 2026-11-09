@@ -16,8 +16,9 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class WaveStatsRefreshLoop(
     IEngineStore engine,
     IOptions<RippleEngineOptions> options,
+    TimeProvider time,
     ILogger<WaveStatsRefreshLoop> logger)
-    : PeriodicLoop(options.Value.WaveStatsRefreshInterval, logger)
+    : PeriodicLoop(options.Value.WaveStatsRefreshInterval, time, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 

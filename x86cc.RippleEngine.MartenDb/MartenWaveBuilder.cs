@@ -17,9 +17,9 @@ namespace x86cc.RippleEngine.MartenDb;
 /// ripple's type.
 /// </summary>
 internal sealed class MartenWaveBuilder(
-    IQuerySession session, RippleDataSource dataSource, string? name, string? waveType,
+    IQuerySession session, RippleDataSource dataSource, TimeProvider time, string? name, string? waveType,
     string? wavePayloadJson, Guid waveId, Guid? parentRippleId, bool continueExisting)
-    : WaveBuilderBase(dataSource, name, waveType, wavePayloadJson, waveId, parentRippleId, continueExisting)
+    : WaveBuilderBase(dataSource, time, name, waveType, wavePayloadJson, waveId, parentRippleId, continueExisting)
 {
     public override IWaveBuilder AddRipples<TSource, TMessage>(
         Expression<Func<TSource, bool>> predicate,

@@ -29,4 +29,10 @@
         <InternalsVisibleTo Include="x86cc.RippleEngine.Hosting" />
     </ItemGroup>
 
+    <!-- The clock-driven component tests build ExecutionPipeline / PeriodicLoop directly with a FakeTimeProvider and
+         in-memory stores — no host, no Postgres. -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="x86cc.RippleEngine.Tests" />
+    </ItemGroup>
+
 </Project>

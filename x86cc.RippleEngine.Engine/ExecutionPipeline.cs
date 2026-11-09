@@ -22,6 +22,7 @@ internal sealed class ExecutionPipeline(
     IServiceScopeFactory scopeFactory,
     ISplashStore splashStore,
     RippleMetrics metrics,
+    TimeProvider time,
     ILogger<ExecutionPipeline> logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
@@ -42,7 +43,7 @@ internal sealed class ExecutionPipeline(
     //     ripples that had just run successfully.
     // StopAsync arms this with CancelAfter(ShutdownDrainGrace), so both stages get the drain and one deadline
     // bounds the whole shutdown.
-    private readonly CancellationTokenSource _drainCts = new();
+    private readonly CancellationTokenSource _drainCts = new(Timeout.InfiniteTimeSpan, time);
 
     // Ripples this instance owns: posted and not yet <b>durably settled</b> (executed AND their outcome
     // written). Held until settlement — not just until execution finishes — so a stalled settlement (see
@@ -166,11 +167,13 @@ internal sealed class ExecutionPipeline(
 
     private async Task ExecuteAsync(PreparedRipple ripple)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        var startedAt = time.GetUtcNow();
         // Linked to the DRAIN token, not the stop token — see _drainCts. ExecutionTimeout still bounds every
         // individual handler; shutdown only intervenes once the drain grace has run out.
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(_drainCts.Token);
-        timeoutCts.CancelAfter(_options.ExecutionTimeout);
+        // Two sources rather than CreateLinkedTokenSource + CancelAfter: a linked source's timer always runs on
+        // the system clock, and both deadlines must follow the injected TimeProvider.
+        using var deadlineCts = new CancellationTokenSource(_options.ExecutionTimeout, time);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(_drainCts.Token, deadlineCts.Token);
 
         // The context carries the wave + this ripple's id so a handler can expand the wave (spawn child
         // ripples parented to this one) via a generator's Continue(context). LOAD-BEARING ORDERING: a handler's
@@ -218,7 +221,7 @@ internal sealed class ExecutionPipeline(
         // the persisted duration_ms and the exported latency measure the same thing. Settlement is asynchronous
         // (batching + retry backoff), so the store can't derive this: sampling it at write time would fold that
         // wait into every recorded execution time.
-        var endedAt = DateTimeOffset.UtcNow;
+        var endedAt = time.GetUtcNow();
         var elapsedMs = (endedAt - startedAt).TotalMilliseconds;
 
         if (!failed)
@@ -310,7 +313,7 @@ internal sealed class ExecutionPipeline(
                     // shutdown dropped the batch with zero retries — precisely when handlers are deliberately
                     // kept running to finish cleanly, and precisely when a restart makes a transient DB error
                     // most likely. Retries now persist for the full ShutdownDrainGrace.
-                    await Task.Delay(delay, _drainCts.Token);
+                    await Task.Delay(delay, time, _drainCts.Token);
                 }
                 catch (OperationCanceledException)
                 {

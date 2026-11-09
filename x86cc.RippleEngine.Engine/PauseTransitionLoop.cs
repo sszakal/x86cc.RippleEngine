@@ -16,8 +16,9 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class PauseTransitionLoop(
     IEngineStore engine,
     IOptions<RippleEngineOptions> options,
+    TimeProvider time,
     ILogger<PauseTransitionLoop> logger)
-    : PeriodicLoop(options.Value.PauseReconcileInterval, logger)
+    : PeriodicLoop(options.Value.PauseReconcileInterval, time, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 

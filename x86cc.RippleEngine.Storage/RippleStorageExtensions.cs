@@ -2,6 +2,7 @@ using Dapper;
 using FluentMigrator.Runner;
 using FluentMigrator.Runner.VersionTableInfo;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Storage.Migrations;
 
@@ -33,6 +34,9 @@ public static class RippleStorageExtensions
             services.Configure(configure);
         }
 
+        // The host clock (and timers) the engine reads instead of DateTimeOffset.UtcNow / Task.Delay, so a test can
+        // drive time with a fake. TryAdd: a host that already registered its own TimeProvider keeps it.
+        services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(new RippleDataSource(connectionString));
         services.AddSingleton<IEngineStore, EngineStore>();
         services.AddSingleton<ISplashStore, SplashStore>();

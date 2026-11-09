@@ -237,5 +237,10 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
 - Marten handlers open their OWN session from `IDocumentStore` (`store.LightweightSession()`), not an
   injected scoped `IDocumentSession` — the latter doesn't isolate cleanly across the engine's per-ripple
   scopes under concurrency.
-- The engine mixes host-clock (`DateTimeOffset.UtcNow` for `next_attempt_at`) with DB-clock (`now()` for
-  eligibility); fine when NTP-synced, but tight time tolerances make tests fragile on a drifting container VM.
+- The host clock is an injected **`TimeProvider`** (`TimeProvider.System`, registered with `TryAdd` by
+  storage). Engine/Storage code never calls `DateTimeOffset.UtcNow` or a provider-less `Task.Delay` /
+  `CancelAfter` — use `time.GetUtcNow()`, `Task.Delay(…, time, ct)`, `new CancellationTokenSource(delay, time)`.
+  Timing logic is tested component-level with a `FakeTimeProvider` (`ClockDrivenTests`): never put a whole
+  engine host on a fake clock — its poll/loop delays would stall, and DB `now()` doesn't follow it.
+- The engine mixes host-clock (`TimeProvider`, e.g. for `next_attempt_at`) with DB-clock (`now()` for
+  eligibility); fine when NTP-synced, but tight time tolerances make DB-backed tests fragile on a drifting VM.

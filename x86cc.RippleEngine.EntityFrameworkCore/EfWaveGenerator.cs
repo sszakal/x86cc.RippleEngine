@@ -6,20 +6,20 @@ using x86cc.RippleEngine.Storage;
 
 namespace x86cc.RippleEngine.EntityFrameworkCore;
 
-internal sealed class EfWaveGenerator(RippleDataSource dataSource) : IEfWaveGenerator
+internal sealed class EfWaveGenerator(RippleDataSource dataSource, TimeProvider time) : IEfWaveGenerator
 {
     public IWaveBuilder Create(DbContext context, string name)
-        => new EfWaveBuilder(context, dataSource, name, waveType: null, wavePayloadJson: null,
+        => new EfWaveBuilder(context, dataSource, time, name, waveType: null, wavePayloadJson: null,
             Guid.NewGuid(), parentRippleId: null, continueExisting: false);
 
     public IWaveBuilder Create<TWave>(DbContext context, string name, TWave wavePayload)
         where TWave : notnull
-        => new EfWaveBuilder(context, dataSource, name, RippleTypeName.Of<TWave>(),
+        => new EfWaveBuilder(context, dataSource, time, name, RippleTypeName.Of<TWave>(),
             JsonSerializer.Serialize(wavePayload, typeof(TWave), RippleJson.Options),
             Guid.NewGuid(), parentRippleId: null, continueExisting: false);
 
     public IWaveBuilder Continue(DbContext context, IRippleContext rippleContext)
-        => new EfWaveBuilder(context, dataSource, name: null, waveType: null, wavePayloadJson: null,
+        => new EfWaveBuilder(context, dataSource, time, name: null, waveType: null, wavePayloadJson: null,
             rippleContext.WaveId, rippleContext.RippleId, continueExisting: true);
 }
 
