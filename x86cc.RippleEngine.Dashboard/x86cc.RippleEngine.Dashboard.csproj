@@ -7,7 +7,7 @@
 
         <IsPackable>true</IsPackable>
         <PackageId>x86cc.RippleEngine.Dashboard</PackageId>
-        <Description>RippleEngine monitoring dashboard: the read-only /api projections over the ripple schema plus the Angular SPA, embedded in the assembly. Enable it with RippleSetupOptions.EnableDashboard, or map it yourself with MapRippleDashboard().</Description>
+        <Description>RippleEngine monitoring dashboard: the /api read projections and operator writes (type config, pause/resume, reschedule) plus the Angular SPA, embedded in the assembly. Enable it with RippleSetupOptions.EnableDashboard, or map it yourself with MapRippleDashboard().</Description>
         <PackageTags>$(PackageTags);dashboard;aspnetcore</PackageTags>
 
         <!-- The SPA lives in spa/ (an npm project). Its node_modules would otherwise be swept into the SDK's

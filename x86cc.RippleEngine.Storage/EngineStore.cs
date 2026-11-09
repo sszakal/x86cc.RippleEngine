@@ -725,6 +725,10 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
     public async Task<int?> RescheduleWaveAsync(Guid waveId, int batchSize, double gapSeconds,
         string? typeKey = null, CancellationToken ct = default)
     {
+        // The new batch/gap are the same schedule_order operands a type_schedule row holds, so the same poison
+        // values (a zero divisor, a non-positive gap) would corrupt the re-stamped rows — refuse them here too.
+        TypeScheduleGuard.Validate(batchSize, gapSeconds, maxAttempts: null);
+
         await using var conn = await dataSource.OpenConnectionAsync(ct);
 
         // Two reschedules of the same wave MUST NOT overlap. Each takes `for update skip locked`, so the second

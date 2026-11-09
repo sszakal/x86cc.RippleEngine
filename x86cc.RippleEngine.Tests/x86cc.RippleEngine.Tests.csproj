@@ -17,6 +17,7 @@
         </PackageReference>
         <PackageReference Include="Shouldly"/>
         <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing"/>
+        <PackageReference Include="Microsoft.AspNetCore.TestHost"/>
         <PackageReference Include="Testcontainers.PostgreSql"/>
         <PackageReference Include="Dapper"/>
         <PackageReference Include="Marten"/>

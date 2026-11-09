@@ -21,4 +21,14 @@ public static class RippleTypeKey
     public const string Default = "__default__";
 
     public static string Compose(string? waveType, string? rippleType) => $"{waveType}{Separator}{rippleType}";
+
+    /// <summary>
+    /// Whether <paramref name="typeKey"/> can name a <c>type_schedule</c> row: <see cref="Default"/>, or a
+    /// <see cref="Compose"/>d key — exactly one <see cref="Separator"/> (either half may be empty, as
+    /// <see cref="Compose"/> allows; a persisted payload name never contains the separator). Lets an edit path
+    /// refuse a typo such as <c>"RecalcContext"</c> instead of writing a row no ripple will ever match.
+    /// </summary>
+    public static bool IsWellFormed(string? typeKey)
+        => typeKey == Default
+           || (typeKey is not null && typeKey.Count(c => c == Separator) == 1);
 }

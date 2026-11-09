@@ -10,7 +10,8 @@ namespace x86cc.RippleEngine.Dashboard;
 /// <summary>
 /// The dashboard API (Wave / Ripple / Splash vocabulary), hosted by every worker: the engine instances are the
 /// symmetric, always-on cluster, and this surface is mostly read-only projections over the same <c>ripple</c>
-/// schema they already poll — plus the operator writes: per-type config (<c>PUT</c>/<c>DELETE
+/// schema they already poll — plus the operator writes (validated with the store's own rules, see
+/// <see cref="TypeScheduleGuard"/> and <see cref="RippleTypeKey.IsWellFormed"/>): per-type config (<c>PUT</c>/<c>DELETE
 /// /settings/types/{typeKey}</c>), pause/resume, and a live wave's reschedule. These write endpoints are
 /// unauthenticated, so map them behind auth anywhere the dashboard is reachable by more than operators. camelCase
 /// aliases so the JSON matches the Angular SPA models. The
@@ -86,12 +87,12 @@ public static class DashboardApi
         // the global queue and only its share changes — raising the gap slows it without displacing other jobs.
         api.MapPost("/waves/{id:guid}/reschedule", async (Guid id, WaveReschedule body, IEngineStore engine) =>
         {
-            // Same floors as the settings PUT — batch/gap mean the same thing here, they are just applied to
+            // Same rules as the settings PUT — batch/gap mean the same thing here, they are just applied to
             // rows that already exist rather than to the ones the next fan-out will create.
-            if (body.BatchSize < 1)
-                return Results.BadRequest(new { error = "batchSize must be >= 1" });
-            if (body.GapSeconds <= 0)
-                return Results.BadRequest(new { error = "gapSeconds must be > 0" });
+            if (Invalid(body.BatchSize, body.GapSeconds, maxAttempts: null) is { } invalid)
+                return invalid;
+            if (body.TypeKey is not null && BadTypeKey(body.TypeKey) is { } badKey)
+                return badKey;
 
             if (await engine.GetWaveAsync(id) is null)
                 return Results.NotFound();
@@ -163,12 +164,10 @@ public static class DashboardApi
         // Create/overwrite a type's config (or edit the DEFAULT row). max_attempts null ⇒ inherit the default.
         api.MapPut("/settings/types/{typeKey}", async (string typeKey, TypeScheduleUpdate body, IEngineStore engine) =>
         {
-            if (body.BatchSize < 1)
-                return Results.BadRequest(new { error = "batchSize must be >= 1" });
-            if (body.GapSeconds <= 0)
-                return Results.BadRequest(new { error = "gapSeconds must be > 0" });
-            if (body.MaxAttempts is < 1)
-                return Results.BadRequest(new { error = "maxAttempts must be >= 1 (or omitted to inherit the default)" });
+            if (BadTypeKey(typeKey) is { } badKey)
+                return badKey;
+            if (Invalid(body.BatchSize, body.GapSeconds, body.MaxAttempts) is { } invalid)
+                return invalid;
             // The DEFAULT row is the floor everything inherits — it must carry a concrete retry ceiling.
             if (typeKey == RippleTypeKey.Default && body.MaxAttempts is null)
                 return Results.BadRequest(new { error = "the default row requires an explicit maxAttempts" });
@@ -181,6 +180,8 @@ public static class DashboardApi
         // cannot be deleted (it is the floor); edit it via PUT instead.
         api.MapDelete("/settings/types/{typeKey}", async (string typeKey, IEngineStore engine) =>
         {
+            if (BadTypeKey(typeKey) is { } badKey)
+                return badKey;
             if (typeKey == RippleTypeKey.Default)
                 return Results.BadRequest(new { error = "the default row cannot be deleted — edit it instead" });
             return await engine.DeleteTypeScheduleAsync(typeKey) switch
@@ -201,6 +202,8 @@ public static class DashboardApi
         // parks. The DEFAULT row is not a real ripple type_key, so pausing it is meaningless.
         api.MapPost("/settings/types/{typeKey}/pause", async (string typeKey, IEngineStore engine) =>
         {
+            if (BadTypeKey(typeKey) is { } badKey)
+                return badKey;
             if (typeKey == RippleTypeKey.Default)
                 return Results.BadRequest(new { error = "the default row cannot be paused" });
             await engine.PauseTypeAsync(typeKey);
@@ -212,6 +215,8 @@ public static class DashboardApi
         // ahead of everything to catch up from its stale slots).
         api.MapPost("/settings/types/{typeKey}/resume", async (string typeKey, bool? rebase, IEngineStore engine) =>
         {
+            if (BadTypeKey(typeKey) is { } badKey)
+                return badKey;
             if (typeKey == RippleTypeKey.Default)
                 return Results.BadRequest(new { error = "the default row cannot be resumed" });
             await engine.ResumeTypeAsync(typeKey, rebase ?? true);
@@ -241,6 +246,24 @@ public static class DashboardApi
 
         return endpoints;
     }
+
+    // The schedule rules are TypeScheduleGuard's, the same check the store enforces by throwing — reported here as
+    // a 400 so a bad edit is the operator's error, not a 500 from the store.
+    private static IResult? Invalid(int batchSize, double gapSeconds, int? maxAttempts)
+        => TypeScheduleGuard.Check(batchSize, gapSeconds, maxAttempts) is { } problem
+            ? Results.BadRequest(new { error = problem.Message })
+            : null;
+
+    // A key that isn't "{waveType}|{rippleType}" (or the DEFAULT row) matches no ripple, so writing it would be a
+    // silent no-op — a paused type that never pauses, a config that never applies. Usually a typo or a hand-built URL.
+    private static IResult? BadTypeKey(string typeKey)
+        => RippleTypeKey.IsWellFormed(typeKey)
+            ? null
+            : Results.BadRequest(new
+            {
+                error = $"'{typeKey}' is not a type key — expected \"{{waveType}}{RippleTypeKey.Separator}{{rippleType}}\" "
+                        + $"or \"{RippleTypeKey.Default}\""
+            });
 
     // The PUT body for a settings edit; max_attempts null ⇒ inherit the default row's ceiling.
     public sealed record TypeScheduleUpdate(int BatchSize, double GapSeconds, int? MaxAttempts);

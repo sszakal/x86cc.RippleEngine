@@ -73,6 +73,8 @@
         <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
         <PackageVersion Include="Shouldly" Version="4.3.0" />
         <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.7.0" />
+        <!-- In-memory server for the dashboard API tests (HTTP layer without a socket). -->
+        <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.2" />
         <PackageVersion Include="Testcontainers.PostgreSql" Version="4.12.0" />
         <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     </ItemGroup>

@@ -4,7 +4,8 @@ namespace x86cc.RippleEngine.Storage;
 /// The one rule set for a valid per-type scheduling config, applied at BOTH doors into
 /// <c>type_schedule</c>: the developer-facing registration (<c>AddHandler</c>, which fails the host at startup)
 /// and <see cref="IEngineStore.UpsertTypeScheduleAsync"/> / <see cref="IEngineStore.SeedTypeScheduleAsync"/>,
-/// which every other caller — the dashboard edit path included — goes through.
+/// which every other caller goes through — plus <see cref="IEngineStore.RescheduleWaveAsync"/>, whose batch/gap
+/// are the same operands. The dashboard checks with <see cref="Check"/> first, so its 400s use these rules too.
 /// </summary>
 /// <remarks>
 /// These values are not advisory: they are operands in the <c>schedule_order</c> arithmetic
@@ -36,19 +37,43 @@ public static class TypeScheduleGuard
     /// <summary>Throws <see cref="ArgumentOutOfRangeException"/> if the config can't produce a usable schedule.</summary>
     public static void Validate(int batchSize, double gapSeconds, int? maxAttempts)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
-        // Zero is rejected along with negatives: it doesn't mean "no spacing", it means every batch of the type
-        // shares one slot and the type monopolises the claim until drained (see the remarks above).
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(gapSeconds);
-        if (!double.IsFinite(gapSeconds))
+        if (Check(batchSize, gapSeconds, maxAttempts) is { } problem)
         {
-            throw new ArgumentOutOfRangeException(nameof(gapSeconds), gapSeconds,
-                "gapSeconds must be a finite number.");
-        }
-
-        if (maxAttempts is { } max)
-        {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(max, nameof(maxAttempts));
+            throw new ArgumentOutOfRangeException(problem.ParamName, problem.Value, problem.Message);
         }
     }
+
+    /// <summary>
+    /// The non-throwing form of <see cref="Validate"/>: the first rule the config breaks, or null when it is
+    /// usable. For callers that report a bad value rather than fail on it — the dashboard turns it into a 400
+    /// with <see cref="TypeScheduleProblem.Message"/> as the error, so the HTTP layer and the store can never
+    /// disagree about what is allowed.
+    /// </summary>
+    public static TypeScheduleProblem? Check(int batchSize, double gapSeconds, int? maxAttempts)
+    {
+        if (batchSize < 1)
+        {
+            return new(nameof(batchSize), batchSize, "batchSize must be >= 1");
+        }
+
+        // Zero is rejected along with negatives: it doesn't mean "no spacing", it means every batch of the type
+        // shares one slot and the type monopolises the claim until drained (see the remarks above). NaN fails
+        // `> 0` too, so the finiteness check only has +Infinity left to catch.
+        if (!(gapSeconds > 0) || !double.IsFinite(gapSeconds))
+        {
+            return new(nameof(gapSeconds), gapSeconds, "gapSeconds must be a finite number > 0");
+        }
+
+        if (maxAttempts is < 1)
+        {
+            return new(nameof(maxAttempts), maxAttempts,
+                "maxAttempts must be >= 1 (or omitted to inherit the default)");
+        }
+
+        return null;
+    }
 }
+
+/// <summary>Which <see cref="TypeScheduleGuard"/> rule a config broke: the offending parameter, its value, and a
+/// message phrased for an operator (it is the dashboard's 400 body verbatim).</summary>
+public sealed record TypeScheduleProblem(string ParamName, object? Value, string Message);

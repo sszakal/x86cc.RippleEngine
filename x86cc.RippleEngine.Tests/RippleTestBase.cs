@@ -38,7 +38,7 @@ public abstract class RippleTestBase : IAsyncLifetime
     protected IEfWaveGenerator EfGenerator => Storage.GetRequiredService<IEfWaveGenerator>();
     protected RippleDataSource Db => Storage.GetRequiredService<RippleDataSource>();
 
-    public async Task InitializeAsync()
+    public virtual async Task InitializeAsync()
     {
         await _postgres.StartAsync();
         ConnectionString = _postgres.GetConnectionString();
@@ -61,7 +61,7 @@ public abstract class RippleTestBase : IAsyncLifetime
         Storage.MigrateRipple();
     }
 
-    public async Task DisposeAsync()
+    public virtual async Task DisposeAsync()
     {
         _container.Dispose();
         await _postgres.DisposeAsync();

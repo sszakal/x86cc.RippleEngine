@@ -113,7 +113,7 @@ sibling packages over the same Core abstractions:
   stays on the 9.0.x line Marten needs (EF 10 would pull Npgsql 10). Depends on Core + Storage + Npgsql EF.
 - **`x86cc.RippleEngine.Dashboard`** — the monitoring surface, ASP.NET Core (`FrameworkReference`):
   `DashboardApi.MapRippleDashboard()` (the `/api` endpoints — reads via Storage's `IDashboardQueries`, plus the
-  operator writes: type config, pause/resume, reschedule — camelCase to match the SPA's models; no SQL lives here) and `RippleDashboardSpa.MapRippleDashboardSpa()` (the Angular bundle, served from a
+  operator writes: type config, pause/resume, reschedule, validated with the store's own rules — `TypeScheduleGuard.Check` and `RippleTypeKey.IsWellFormed` — so a bad edit is a 400, never a 500 or a silent no-op; camelCase to match the SPA's models; no SQL lives here; HTTP-tested in `DashboardApiTests` over a `TestServer`) and `RippleDashboardSpa.MapRippleDashboardSpa()` (the Angular bundle, served from a
   `ManifestEmbeddedFileProvider` as a route **fallback** so it never shadows the host's endpoints). The SPA
   itself lives in `spa/` and its csproj builds it into `dist/` and embeds it — no `wwwroot` anywhere. Depends on
   Core + Storage + Engine (`/api/settings/types` reads `RippleHandlerRegistry`).
