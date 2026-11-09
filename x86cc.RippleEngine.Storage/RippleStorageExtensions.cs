@@ -41,6 +41,8 @@ public static class RippleStorageExtensions
         services.AddSingleton<IEngineStore, EngineStore>();
         services.AddSingleton<ISplashStore, SplashStore>();
         services.AddSingleton<IReportStore, ReportStore>();
+        // The dashboard's read queries — here, not in the Dashboard package, so the schema lives in one assembly.
+        services.AddSingleton<IDashboardQueries, DashboardQueries>();
         // The source-less wave generator: create waves/ripples from an in-memory collection, no provider needed.
         services.AddSingleton<ICollectionWaveGenerator, CollectionWaveGenerator>();
 

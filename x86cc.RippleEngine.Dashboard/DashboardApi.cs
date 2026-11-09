@@ -1,4 +1,3 @@
-using Dapper;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -9,9 +8,12 @@ using x86cc.RippleEngine.Storage;
 namespace x86cc.RippleEngine.Dashboard;
 
 /// <summary>
-/// The dashboard read API (Wave / Ripple / Splash vocabulary), hosted by every worker: the engine instances
-/// are the symmetric, always-on cluster, and this surface is just read-only projections over the same
-/// <c>ripple</c> schema they already poll. camelCase aliases so the JSON matches the Angular SPA models. The
+/// The dashboard API (Wave / Ripple / Splash vocabulary), hosted by every worker: the engine instances are the
+/// symmetric, always-on cluster, and this surface is mostly read-only projections over the same <c>ripple</c>
+/// schema they already poll — plus the operator writes: per-type config (<c>PUT</c>/<c>DELETE
+/// /settings/types/{typeKey}</c>), pause/resume, and a live wave's reschedule. These write endpoints are
+/// unauthenticated, so map them behind auth anywhere the dashboard is reachable by more than operators. camelCase
+/// aliases so the JSON matches the Angular SPA models. The
 /// SPA's own static files are served by <see cref="RippleDashboardSpa"/> from the same origin, so no proxy is
 /// needed in production.
 /// </summary>
@@ -21,8 +23,8 @@ namespace x86cc.RippleEngine.Dashboard;
 /// </remarks>
 public static class DashboardApi
 {
-    /// <summary>Maps the dashboard's read API under <c>/api</c>. Requires the Ripple storage services
-    /// (<see cref="RippleDataSource"/>, <see cref="IEngineStore"/>, <see cref="IReportStore"/>); the
+    /// <summary>Maps the dashboard API (read projections + operator writes) under <c>/api</c>. Requires the Ripple storage services
+    /// (<see cref="IDashboardQueries"/>, <see cref="IEngineStore"/>, <see cref="IReportStore"/>); the
     /// <c>/api/settings/types</c> route additionally reads this process's <see cref="RippleHandlerRegistry"/>,
     /// so a host that runs no engine simply lists the types that already have a <c>type_schedule</c> row.</summary>
     public static IEndpointRouteBuilder MapRippleDashboard(this IEndpointRouteBuilder endpoints)
@@ -30,93 +32,23 @@ public static class DashboardApi
         var api = endpoints.MapGroup("/api");
 
         // Wave list + summary, with optional status / text / created-at-range filters. `succeeded` is derived
-        // (never stored); a not-yet-refreshed wave (refreshed_at null) reports all its ripples as pending.
+        // (never stored); a not-yet-refreshed wave reports all its ripples as pending. `q` is a literal substring.
         api.MapGet("/waves", async (string? status, string? q, DateTimeOffset? from, DateTimeOffset? to,
-            int? limit, RippleDataSource db) =>
+            int? limit, IDashboardQueries queries) =>
         {
-            var p = new
-            {
-                status = string.IsNullOrWhiteSpace(status) ? null : status,
-                q = string.IsNullOrWhiteSpace(q) ? null : $"%{q}%",
-                from, to,
-                limit = Math.Clamp(limit ?? 50, 1, 500)
-            };
-            const string where =
-                """
-                where (@status is null or w.status = @status)
-                  and (@q is null or w.name ilike @q or w.type ilike @q)
-                  and (@from is null or w.created_at >= @from)
-                  -- HALF-OPEN [from, to), matching /waves/histogram. When this was inclusive a wave created
-                  -- exactly on a bucket boundary appeared in two adjacent ranges' timelines and disagreed with
-                  -- the total derived from the histogram — and the SPA hands both endpoints the same bounds.
-                  and (@to is null or w.created_at < @to)
-                """;
-
-            await using var conn = await db.OpenConnectionAsync();
-            var waves = await conn.QueryAsync(
-                $"""
-                 select w.id, w.name, w.type, w.status,
-                        w.ripple_count as "rippleCount",
-                        case when w.refreshed_at is null then w.ripple_count else w.pending end as pending,
-                        w.running,
-                        w.paused,
-                        case when w.refreshed_at is null then 0
-                             else greatest(0, w.ripple_count - w.pending - w.running - w.paused - w.failed) end as succeeded,
-                        w.failed,
-                        w.retry_count as "retryCount",
-                        w.avg_duration_ms as "avgDurationMs",
-                        w.splash_sample_count as "splashSampleCount",
-                        case when w.completed_at is not null
-                             then round(extract(epoch from (w.completed_at - w.created_at)) * 1000)::bigint end as "durationMs",
-                        case when w.completed_at is not null and w.completed_at > w.created_at
-                             then round(w.ripple_count / extract(epoch from (w.completed_at - w.created_at)))::bigint end as "throughput",
-                        w.created_at as "createdAt", w.completed_at as "completedAt", w.compacted_at as "compactedAt"
-                 from ripple.wave w
-                 {where}
-                 order by w.created_at desc
-                 limit @limit
-                 """, p);
-
-            var stats = await conn.QuerySingleAsync(
-                $"""
-                 select count(*) as total,
-                        count(*) filter (where w.status = 'Active')    as active,
-                        count(*) filter (where w.status = 'Completed') as completed,
-                        count(*) filter (where w.status = 'Faulted')   as faulted
-                 from ripple.wave w
-                 {where}
-                 """, p);
-
-            return Results.Ok(new { waves, stats });
+            var page = await queries.ListWavesAsync(
+                new WaveListFilter(status, q, from, to, Math.Clamp(limit ?? 50, 1, 500)));
+            return Results.Ok(new { waves = page.Waves, stats = page.Stats });
         });
 
         // Per-day wave counts for the contribution heatmap (grouped by created_at day, UTC).
-        api.MapGet("/waves/activity", async (int? days, RippleDataSource db) =>
-        {
-            var window = Math.Clamp(days ?? 365, 1, 366);
-            await using var conn = await db.OpenConnectionAsync();
-            var rows = await conn.QueryAsync(
-                """
-                select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as date,
-                       count(*) as count,
-                       count(*) filter (where status = 'Completed') as completed,
-                       count(*) filter (where status = 'Faulted')   as faulted,
-                       count(*) filter (where status = 'Active')    as running
-                from ripple.wave
-                -- Plain now(): it is already timestamptz, so it compares correctly against created_at.
-                -- `now() at time zone 'utc'` strips the zone, and comparing that back to a timestamptz makes
-                -- Postgres re-interpret it in the SESSION's TimeZone — shifting the window by the server's
-                -- offset on any non-UTC session.
-                where created_at >= now() - (@window || ' days')::interval
-                group by 1
-                order by 1
-                """, new { window });
-            return Results.Ok(new { days = rows });
-        });
+        api.MapGet("/waves/activity", async (int? days, IDashboardQueries queries) =>
+            Results.Ok(new { days = await queries.GetWaveActivityAsync(Math.Clamp(days ?? 365, 1, 366)) }));
 
         // Wave counts bucketed by a time granularity over a [from, to) range — powers the adaptive tile-zoom
         // (day → hour → minute → second). Returns only NON-EMPTY buckets, colored by outcome like the heatmap.
-        api.MapGet("/waves/histogram", async (DateTimeOffset from, DateTimeOffset to, string bucket, string? tz, RippleDataSource db) =>
+        api.MapGet("/waves/histogram", async (DateTimeOffset from, DateTimeOffset to, string bucket, string? tz,
+            IDashboardQueries queries) =>
         {
             // date_trunc's unit is bound safely (its first arg is text), but whitelist it anyway.
             if (bucket is not ("year" or "day" or "hour" or "minute" or "second"))
@@ -126,91 +58,24 @@ public static class DashboardApi
             // Bucket in the CALLER's timezone. The SPA colors/keys each calendar cell by the browser-local day
             // and drills in on browser-local midnight→midnight windows, so the server must group on the same
             // day boundaries or a green cell can drill into zero waves (its burst falls in the DB-tz day but
-            // outside the browser-tz window). `created_at at time zone @tz` shifts the timestamptz to the
-            // caller's wall clock; we date_trunc that and return the naive wall-clock start, so the browser
-            // reads back the exact day it grouped by. Defaults to UTC when the caller sends no zone.
+            // outside the browser-tz window). Defaults to UTC when the caller sends no zone.
             var zone = string.IsNullOrWhiteSpace(tz) ? "UTC" : tz;
-            await using var conn = await db.OpenConnectionAsync();
-            var buckets = await conn.QueryAsync(
-                """
-                select date_trunc(@bucket, created_at at time zone @zone) as start,
-                       count(*) as count,
-                       count(*) filter (where status = 'Completed') as completed,
-                       count(*) filter (where status = 'Faulted')   as faulted,
-                       count(*) filter (where status = 'Active')    as running
-                from ripple.wave
-                where created_at >= @from and created_at < @to
-                group by 1
-                order by 1
-                """, new { bucket, zone, from, to });
-            return Results.Ok(new { buckets });
+            return Results.Ok(new { buckets = await queries.GetWaveHistogramAsync(from, to, bucket, zone) });
         });
 
         // One wave's detail (enriched with the compaction-computed avg execution time).
-        api.MapGet("/waves/{id:guid}", async (Guid id, RippleDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var wave = await conn.QuerySingleOrDefaultAsync(
-                """
-                select w.id, w.name, w.type, w.status, w.payload_type as "payloadType",
-                       w.ripple_count as "rippleCount",
-                       case when w.refreshed_at is null then w.ripple_count else w.pending end as pending,
-                       w.running,
-                       w.paused,
-                       case when w.refreshed_at is null then 0
-                            else greatest(0, w.ripple_count - w.pending - w.running - w.paused - w.failed) end as succeeded,
-                       w.failed,
-                       w.retry_count as "retryCount",
-                       w.avg_duration_ms as "avgDurationMs", w.splash_sample_count as "splashSampleCount",
-                       case when w.completed_at is not null
-                            then round(extract(epoch from (w.completed_at - w.created_at)) * 1000)::bigint end as "durationMs",
-                       case when w.completed_at is not null and w.completed_at > w.created_at
-                            then round(w.ripple_count / extract(epoch from (w.completed_at - w.created_at)))::bigint end as "throughput",
-                       w.created_at as "createdAt", w.completed_at as "completedAt", w.compacted_at as "compactedAt"
-                from ripple.wave w where w.id = @id
-                """, new { id });
-            return wave is null ? Results.NotFound() : Results.Ok(wave);
-        });
+        api.MapGet("/waves/{id:guid}", async (Guid id, IDashboardQueries queries) =>
+            await queries.GetWaveAsync(id) is { } wave ? Results.Ok(wave) : Results.NotFound());
 
         // Per-type metrics: scheduling share (batch/gap) + the surviving count-weighted EWMA of execution time
         // from ripple_type_metric (avg_ms is the moving average; sample_count is the lifetime "(n)" label).
-        api.MapGet("/metrics/types", async (RippleDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var rows = await conn.QueryAsync(
-                """
-                select coalesce(ts.type_key, m.type_key) as "typeKey",
-                       ts.batch_size  as "batchSize",
-                       ts.gap_seconds as "gapSeconds",
-                       case when ts.gap_seconds is not null and ts.gap_seconds <> 0
-                            then ts.batch_size / ts.gap_seconds end as "share",
-                       coalesce(m.sample_count, 0) as "sampleCount",
-                       round(m.avg_ms)::bigint as "avgMs",
-                       round(m.avg_wait_ms)::bigint as "avgWaitMs",
-                       m.avg_retry_rate as "avgRetryRate"
-                from ripple.type_schedule ts
-                full outer join ripple.ripple_type_metric m on m.type_key = ts.type_key
-                order by 1
-                """);
-            return Results.Ok(rows);
-        });
+        api.MapGet("/metrics/types", async (IDashboardQueries queries) =>
+            Results.Ok(await queries.GetTypeMetricsAsync()));
 
         // Live cluster from heartbeats: in-flight per instance + staleness (seconds since last heartbeat).
         // Every worker writes its in-memory executing count on each heartbeat, so this is low-latency truth.
-        api.MapGet("/cluster", async (RippleDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var instances = await conn.QueryAsync(
-                """
-                select instance_id as "instanceId",
-                       last_seen_at as "lastSeenAt",
-                       executing,
-                       round(extract(epoch from (now() - last_seen_at)))::bigint as "ageSeconds"
-                from ripple.instance_heartbeat
-                order by instance_id
-                """);
-            return Results.Ok(new { instances });
-        });
+        api.MapGet("/cluster", async (IDashboardQueries queries) =>
+            Results.Ok(new { instances = await queries.GetClusterAsync() }));
 
         api.MapGet("/waves/{id:guid}/report.csv", (Guid id, IReportStore reports) => WaveReportCsv(id, reports));
 
@@ -253,12 +118,9 @@ public static class DashboardApi
         // hosted in — so even a handler with no row yet is offered. (Config edits take effect on the NEXT
         // fan-out: batch/gap are baked into schedule_order when a wave is created, not re-read for in-flight
         // ripples; max_attempts is read live at claim time.)
-        api.MapGet("/settings/types", async (RippleDataSource db, RippleHandlerRegistry registry) =>
+        api.MapGet("/settings/types", async (IDashboardQueries queries, RippleHandlerRegistry registry) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var rows = (await conn.QueryAsync<TypeScheduleRow>(
-                "select type_key, batch_size, gap_seconds, max_attempts, pause_state from ripple.type_schedule"))
-                .ToDictionary(r => r.TypeKey);
+            var rows = (await queries.GetTypeSchedulesAsync()).ToDictionary(r => r.TypeKey);
 
             rows.TryGetValue(RippleTypeKey.Default, out var def);
             var seeds = registry.Schedules.ToDictionary(s => s.TypeKey);
@@ -379,11 +241,6 @@ public static class DashboardApi
 
         return endpoints;
     }
-
-    // A row of ripple.type_schedule (snake_case → PascalCase via Dapper's underscore matching).
-    // batch_size/gap_seconds are nullable: a row can exist purely to hold pause_state while the type still
-    // inherits the DEFAULT's scheduling values.
-    private sealed record TypeScheduleRow(string TypeKey, int? BatchSize, decimal? GapSeconds, int? MaxAttempts, string PauseState);
 
     // The PUT body for a settings edit; max_attempts null ⇒ inherit the default row's ceiling.
     public sealed record TypeScheduleUpdate(int BatchSize, double GapSeconds, int? MaxAttempts);

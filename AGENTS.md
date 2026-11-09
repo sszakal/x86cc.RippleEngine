@@ -80,7 +80,8 @@ sibling packages over the same Core abstractions:
   keeps growing as handlers expand it, so it can't be inferred from the original count).
 - **`x86cc.RippleEngine.Storage`** — the coordination surface (Dapper + FluentMigrator). `IEngineStore`
   (`EngineStore.cs`: create wave / add ripples / the one-round-trip `PollAsync` claim / heartbeat / recovery /
-  type-schedule / stats refresh) and `ISplashStore` (`SplashStore.cs`: settlement). Also the
+  type-schedule / stats refresh), `ISplashStore` (`SplashStore.cs`: settlement) and `IDashboardQueries`
+  (`DashboardQueries.cs`: the dashboard's read SQL, kept here so only Storage knows the schema). Also the
   `Core.ICollectionWaveGenerator` impl (`CollectionWaveGenerator`, a thin adapter over `IEngineStore` — its
   builder does `Create`/`Continue` in-memory), `RippleSeedSerializer` (the one place in-memory items become
   `RippleSeed`s), **`RippleJson.Options`** (the one read-only JSON contract every payload and report is
@@ -111,8 +112,8 @@ sibling packages over the same Core abstractions:
   payload with `to_jsonb(...)`. Same `WaveInsertSql` stamping as Marten. Pinned to EF Core **9.x** so Npgsql
   stays on the 9.0.x line Marten needs (EF 10 would pull Npgsql 10). Depends on Core + Storage + Npgsql EF.
 - **`x86cc.RippleEngine.Dashboard`** — the monitoring surface, ASP.NET Core (`FrameworkReference`):
-  `DashboardApi.MapRippleDashboard()` (the read-only `/api` projections over the ripple schema, camelCase to
-  match the SPA's models) and `RippleDashboardSpa.MapRippleDashboardSpa()` (the Angular bundle, served from a
+  `DashboardApi.MapRippleDashboard()` (the `/api` endpoints — reads via Storage's `IDashboardQueries`, plus the
+  operator writes: type config, pause/resume, reschedule — camelCase to match the SPA's models; no SQL lives here) and `RippleDashboardSpa.MapRippleDashboardSpa()` (the Angular bundle, served from a
   `ManifestEmbeddedFileProvider` as a route **fallback** so it never shadows the host's endpoints). The SPA
   itself lives in `spa/` and its csproj builds it into `dist/` and embeds it — no `wwwroot` anywhere. Depends on
   Core + Storage + Engine (`/api/settings/types` reads `RippleHandlerRegistry`).

@@ -1,7 +1,8 @@
 # Ripple Dashboard
 
-The monitoring surface for Ripple — waves → ripples → splashes — as a single package: the read-only API
-(`DashboardApi.MapRippleDashboard()`, mounted at `/api`) and the Angular + Tailwind SPA that consumes it.
+The monitoring surface for Ripple — waves → ripples → splashes — as a single package: the API
+(`DashboardApi.MapRippleDashboard()`, mounted at `/api` — read projections plus the operator writes: type config,
+pause/resume, reschedule) and the Angular + Tailwind SPA that consumes it.
 
 The SPA is **embedded in this assembly**. `spa/` is built into `dist/` during `dotnet build` and embedded as
 resources, so a host serves the whole dashboard from a package reference — there is no `wwwroot` to deploy and

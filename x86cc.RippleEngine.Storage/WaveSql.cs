@@ -3,7 +3,8 @@ using x86cc.RippleEngine.Storage.Migrations;
 namespace x86cc.RippleEngine.Storage;
 
 /// <summary>
-/// The single projection of a <c>wave</c> row into <see cref="Core.Wave"/>, shared by every reader.
+/// The single projection of a <c>wave</c> row into <see cref="Core.Wave"/>, shared by every reader — and its
+/// derived <see cref="PendingExpr"/> / <see cref="SucceededExpr"/>, which the dashboard's wave queries reuse.
 /// </summary>
 /// <remarks>
 /// It lives here rather than on one store because the derived columns are subtle and were previously copied:
@@ -18,14 +19,22 @@ internal static class WaveSql
 {
     private const string S = M0001_Schema.SchemaName;
 
+    /// <summary>The honest live <c>pending</c> of wave <c>w</c>: every ripple until the first refresh.</summary>
+    public const string PendingExpr = "case when w.refreshed_at is null then w.ripple_count else w.pending end";
+
+    /// <summary>The derived <c>succeeded</c> of wave <c>w</c> (never stored) — see the remarks for why <c>paused</c>
+    /// must be in the subtraction.</summary>
+    public const string SucceededExpr =
+        "case when w.refreshed_at is null then 0 "
+        + "else greatest(0, w.ripple_count - w.pending - w.running - w.paused - w.failed) end";
+
     /// <summary>The projection, without a <c>where</c> clause — callers append their own predicate.</summary>
     public const string Select = $"""
         select w.id, w.name, w.type, w.payload, w.payload_type, w.status, w.ripple_count,
-               case when w.refreshed_at is null then w.ripple_count else w.pending end as pending,
+               {PendingExpr} as pending,
                w.running,
                w.paused,
-               case when w.refreshed_at is null then 0
-                    else greatest(0, w.ripple_count - w.pending - w.running - w.paused - w.failed) end as succeeded,
+               {SucceededExpr} as succeeded,
                w.failed,
                w.retry_count,
                w.created_at, w.completed_at
