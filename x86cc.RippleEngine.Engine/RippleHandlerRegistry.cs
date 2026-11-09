@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Storage;
@@ -25,11 +24,6 @@ internal readonly record struct RippleInvocation(string[] TargetIds, Func<Task<S
 /// </summary>
 public sealed class RippleHandlerRegistry
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     private readonly Dictionary<string, Func<IServiceProvider, JsonDocument?, JsonDocument, IRippleContext, RippleInvocation>>
         _invokers = new();
 
@@ -61,8 +55,8 @@ public sealed class RippleHandlerRegistry
         _invokers[key] = (sp, wavePayload, ripplePayload, context) =>
         {
             var handler = sp.GetRequiredService<THandler>();
-            var wave = wavePayload is null ? default : wavePayload.Deserialize<TWave>(JsonOptions);
-            var ripple = ripplePayload.Deserialize<TRipple>(JsonOptions)!;
+            var wave = wavePayload is null ? default : wavePayload.Deserialize<TWave>(RippleJson.Options);
+            var ripple = ripplePayload.Deserialize<TRipple>(RippleJson.Options)!;
             // TargetIds are read now (before the handler runs) so the pipeline can attribute an all-failed
             // report if Execute throws.
             var targetIds = ripple.TargetIds?.ToArray() ?? [];

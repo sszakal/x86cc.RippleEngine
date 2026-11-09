@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Dapper;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Core;
@@ -53,11 +52,6 @@ internal sealed class ReportStore(RippleDataSource dataSource, IOptions<RippleOp
 
     // Fixed key so at most one instance runs compaction at a time (distinct from the stats-refresh lock).
     private const long CompactionLockKey = 0x7269_7070_6C65_03L; // "ripple\x03"
-
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new JsonStringEnumConverter() }
-    };
 
     public async Task<int> CompactReadyWavesAsync(int chunkSize, int maxWaves, CancellationToken ct = default)
     {
@@ -145,7 +139,7 @@ internal sealed class ReportStore(RippleDataSource dataSource, IOptions<RippleOp
             new { waveId }, cancellationToken: ct));
 
         var items = chunkJson
-            .SelectMany(j => JsonSerializer.Deserialize<List<ReportItem>>(j, Json) ?? [])
+            .SelectMany(j => JsonSerializer.Deserialize<List<ReportItem>>(j, RippleJson.Options) ?? [])
             .ToList();
 
         return new WaveReport(wave.Id, wave.Name, wave.Status, wave.RippleCount,

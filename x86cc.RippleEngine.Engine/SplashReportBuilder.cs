@@ -1,6 +1,6 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using x86cc.RippleEngine.Core;
+using x86cc.RippleEngine.Storage;
 
 namespace x86cc.RippleEngine.Engine;
 
@@ -12,11 +12,6 @@ namespace x86cc.RippleEngine.Engine;
 /// </summary>
 internal static class SplashReportBuilder
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     /// <summary>
     /// Fills in inferred successes for any unreported target, then returns the serialized <c>report</c> jsonb
     /// (null only when there are no targets and nothing was reported) and whether the attempt failed.
@@ -37,11 +32,11 @@ internal static class SplashReportBuilder
         }
 
         var items = report.Items;
-        var json = items.Count == 0 ? null : JsonSerializer.Serialize(items, Json);
+        var json = items.Count == 0 ? null : JsonSerializer.Serialize(items, RippleJson.Options);
         return (json, report.HasFailures);
     }
 
     /// <summary>The all-targets-failed report recorded when a handler throws (framework-terminated failure).</summary>
     public static string Failed(IReadOnlyList<string> targetIds, string message)
-        => JsonSerializer.Serialize(SplashReport.Create().Failed(targetIds, message).Items, Json);
+        => JsonSerializer.Serialize(SplashReport.Create().Failed(targetIds, message).Items, RippleJson.Options);
 }

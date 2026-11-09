@@ -83,7 +83,9 @@ sibling packages over the same Core abstractions:
   type-schedule / stats refresh) and `ISplashStore` (`SplashStore.cs`: settlement). Also the
   `Core.ICollectionWaveGenerator` impl (`CollectionWaveGenerator`, a thin adapter over `IEngineStore` — its
   builder does `Create`/`Continue` in-memory), `RippleSeedSerializer` (the one place in-memory items become
-  `RippleSeed`s), and — shared by all queryable-source providers via `InternalsVisibleTo` — `WaveInsertSql`
+  `RippleSeed`s), **`RippleJson.Options`** (the one read-only JSON contract every payload and report is
+  written and read with — never build your own `JsonSerializerOptions` for them), and — shared by all
+  queryable-source providers via `InternalsVisibleTo` — `WaveInsertSql`
   (the fan-out `INSERT … SELECT` + `type_key` stamping) and `WaveBuilderBase` (the provider-neutral dispatch +
   wave create/continue; a provider subclass only builds each spec's inner `data` SQL). **`ScheduleOrderSql`**
   holds the subtle `schedule_order` stamping (base-clamp + per-type batch/gap) in **one place**, shared by both
