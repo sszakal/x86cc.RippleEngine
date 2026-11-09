@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Storage;
@@ -17,31 +16,15 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class WaveStatsRefreshLoop(
     IEngineStore engine,
     IOptions<RippleEngineOptions> options,
-    ILogger<WaveStatsRefreshLoop> logger) : BackgroundService
+    ILogger<WaveStatsRefreshLoop> logger)
+    : PeriodicLoop(options.Value.WaveStatsRefreshInterval, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await Task.Delay(_options.WaveStatsRefreshInterval, stoppingToken);
+    protected override string FailureMessage => "Ripple stats refresh failed";
 
-                try
-                {
-                    await engine.TryRefreshWaveStatsAsync(stoppingToken);
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    logger.LogError(e, "Ripple stats refresh failed");
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // shutting down
-        }
+    protected override async Task TickAsync(CancellationToken stoppingToken)
+    {
+        await engine.TryRefreshWaveStatsAsync(stoppingToken);
     }
 }

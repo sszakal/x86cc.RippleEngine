@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Storage;
@@ -17,32 +16,16 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class PauseTransitionLoop(
     IEngineStore engine,
     IOptions<RippleEngineOptions> options,
-    ILogger<PauseTransitionLoop> logger) : BackgroundService
+    ILogger<PauseTransitionLoop> logger)
+    : PeriodicLoop(options.Value.PauseReconcileInterval, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await Task.Delay(_options.PauseReconcileInterval, stoppingToken);
+    protected override string FailureMessage => "Pause/resume reconcile failed";
 
-                try
-                {
-                    await engine.ReconcilePauseTransitionsAsync(
-                        _options.PauseReconcileChunkSize, _options.PauseReconcileMaxRowsPerPass, stoppingToken);
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    logger.LogError(e, "Pause/resume reconcile failed");
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // shutting down
-        }
+    protected override async Task TickAsync(CancellationToken stoppingToken)
+    {
+        await engine.ReconcilePauseTransitionsAsync(
+            _options.PauseReconcileChunkSize, _options.PauseReconcileMaxRowsPerPass, stoppingToken);
     }
 }

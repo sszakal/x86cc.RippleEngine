@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Storage;
@@ -20,46 +19,30 @@ internal sealed class RecoveryLoop(
     IEngineStore engine,
     ExecutionPipeline pipeline,
     IOptions<RippleEngineOptions> options,
-    ILogger<RecoveryLoop> logger) : BackgroundService
+    ILogger<RecoveryLoop> logger)
+    : PeriodicLoop(options.Value.RecoveryInterval, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override string FailureMessage => "Ripple recovery sweep failed";
+
+    protected override async Task TickAsync(CancellationToken stoppingToken)
     {
-        try
+        // Detect stale instances (excluding self) and requeue their orphans.
+        var requeued = await engine.RecoverStaleAsync(
+            _options.HeartbeatTimeout, _options.InstanceId, stoppingToken);
+        if (requeued > 0)
         {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await Task.Delay(_options.RecoveryInterval, stoppingToken);
-
-                try
-                {
-                    // Detect stale instances (excluding self) and requeue their orphans.
-                    var requeued = await engine.RecoverStaleAsync(
-                        _options.HeartbeatTimeout, _options.InstanceId, stoppingToken);
-                    if (requeued > 0)
-                    {
-                        logger.LogWarning("Recovered {Count} ripple(s) from dead instance(s)", requeued);
-                    }
-
-                    // Release any of OUR OWN claims the execute block isn't actually running (past the grace
-                    // window), gated on the pipeline's live in-flight set so genuinely-executing ripples are kept.
-                    var reclaimed = await engine.RecoverSelfStrandedAsync(
-                        _options.InstanceId, pipeline.InFlightIds, _options.SelfReconcileGrace, stoppingToken);
-                    if (reclaimed > 0)
-                    {
-                        logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);
-                    }
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    logger.LogError(e, "Ripple recovery sweep failed");
-                }
-            }
+            Logger.LogWarning("Recovered {Count} ripple(s) from dead instance(s)", requeued);
         }
-        catch (OperationCanceledException)
+
+        // Release any of OUR OWN claims the execute block isn't actually running (past the grace
+        // window), gated on the pipeline's live in-flight set so genuinely-executing ripples are kept.
+        var reclaimed = await engine.RecoverSelfStrandedAsync(
+            _options.InstanceId, pipeline.InFlightIds, _options.SelfReconcileGrace, stoppingToken);
+        if (reclaimed > 0)
         {
-            // shutting down
+            Logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);
         }
     }
 }

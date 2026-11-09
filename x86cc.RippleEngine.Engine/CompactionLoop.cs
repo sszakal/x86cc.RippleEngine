@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using x86cc.RippleEngine.Storage;
@@ -16,33 +15,17 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class CompactionLoop(
     IReportStore reports,
     IOptions<RippleEngineOptions> options,
-    ILogger<CompactionLoop> logger) : BackgroundService
+    ILogger<CompactionLoop> logger)
+    : PeriodicLoop(options.Value.CompactionInterval, logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await Task.Delay(_options.CompactionInterval, stoppingToken);
+    protected override string FailureMessage => "Wave compaction/purge failed";
 
-                try
-                {
-                    await reports.CompactReadyWavesAsync(
-                        _options.ReportChunkSize, _options.CompactionMaxWavesPerPass, stoppingToken);
-                    await reports.PurgeExpiredWavesAsync(_options.CompactionMaxWavesPerPass, stoppingToken);
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    logger.LogError(e, "Wave compaction/purge failed");
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // shutting down
-        }
+    protected override async Task TickAsync(CancellationToken stoppingToken)
+    {
+        await reports.CompactReadyWavesAsync(
+            _options.ReportChunkSize, _options.CompactionMaxWavesPerPass, stoppingToken);
+        await reports.PurgeExpiredWavesAsync(_options.CompactionMaxWavesPerPass, stoppingToken);
     }
 }
