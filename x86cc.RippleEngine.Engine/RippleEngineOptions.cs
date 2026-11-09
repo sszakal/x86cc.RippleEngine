@@ -39,6 +39,14 @@ public class RippleEngineOptions
     /// <summary>Poll cadence after repeated empty polls (adaptive backoff ceiling).</summary>
     public TimeSpan MaxPollDelay { get; set; } = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// How long the dispatcher waits after a failed poll cycle (typically the DB being unreachable) before trying
+    /// again. A fixed pause, not a backoff: the fallback heartbeat rides on each attempt, so growing the wait would
+    /// let a live instance go silent past <see cref="HeartbeatTimeout"/> and have its in-flight work recovered.
+    /// Must be positive — zero would spin a hot loop of errors against a database that is down.
+    /// </summary>
+    public TimeSpan DispatchErrorDelay { get; set; } = TimeSpan.FromSeconds(1);
+
     /// <summary>Max succeeded-splash rows written per DB round trip.</summary>
     public int SucceededBatchSize { get; set; } = 100;
 
@@ -137,6 +145,7 @@ public class RippleEngineOptions
         target.ClaimBatchSize = ClaimBatchSize;
         target.MinPollDelay = MinPollDelay;
         target.MaxPollDelay = MaxPollDelay;
+        target.DispatchErrorDelay = DispatchErrorDelay;
         target.SucceededBatchSize = SucceededBatchSize;
         target.FailedBatchSize = FailedBatchSize;
         target.SettlementRetryDelay = SettlementRetryDelay;

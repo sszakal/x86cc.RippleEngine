@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Threading.Channels;
 using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -12,26 +10,31 @@ namespace x86cc.RippleEngine.Engine;
 /// The TPL Dataflow execution stage. Claimed ripples are posted into a single bounded
 /// <see cref="ActionBlock{T}"/> whose <c>MaxDegreeOfParallelism</c> is this instance's ripple cap
 /// (<see cref="RippleEngineOptions.MaxConcurrency"/>). Each execution resolves the handler by the ripple's
-/// payload type, runs it inside a DI scope with a timeout, and routes the outcome to a succeeded/failed
-/// channel; batched flush loops write the splashes, one DB round trip per batch. No lanes, no weighting — the
-/// global FIFO ordering is decided by the claim query, not here.
+/// payload type, runs it inside a DI scope with a timeout, and hands the outcome to the
+/// <see cref="SettlementWriter"/> (which writes the splashes in batches). No lanes, no weighting — the global FIFO
+/// ordering is decided by the claim query, not here.
 /// </summary>
+/// <remarks>
+/// The pipeline owns execution and the shutdown sequence; the rest is delegated: which attempts this instance owns
+/// (<see cref="InFlightTracker"/>), whether a failure retries (<see cref="IRetryPolicy"/>), and getting outcomes
+/// durably written (<see cref="SettlementWriter"/>).
+/// </remarks>
 internal sealed class ExecutionPipeline(
     IOptions<RippleEngineOptions> options,
     RippleHandlerRegistry registry,
     IServiceScopeFactory scopeFactory,
-    ISplashStore splashStore,
+    InFlightTracker inFlight,
+    IRetryPolicy retryPolicy,
+    SettlementWriter settlement,
     RippleMetrics metrics,
     TimeProvider time,
     ILogger<ExecutionPipeline> logger)
 {
     private readonly RippleEngineOptions _options = options.Value;
 
-    private readonly Channel<RippleCompletion> _succeeded = Channel.CreateUnbounded<RippleCompletion>();
-    private readonly Channel<RippleFailure> _failed = Channel.CreateUnbounded<RippleFailure>();
-
-    private ActionBlock<PreparedRipple> _execute = default!;
-    private Task[] _loops = [];
+    // Null until Start — the pipeline is one-shot (Start once, StopAsync once), see Lifecycle.
+    private ActionBlock<PreparedRipple>? _execute;
+    private Lifecycle _lifecycle;
 
     // The pipeline's own shutdown clock, deliberately independent of the host's stopping token — nothing here
     // observes that token. The host cancels it BEFORE the dispatcher's finally reaches StopAsync(), so anything
@@ -39,39 +42,14 @@ internal sealed class ExecutionPipeline(
     //   - handlers would surface OperationCanceledException, be caught below as a failed attempt with `attempt`
     //     already spent, and at MaxAttempts be written TERMINALLY Failed — a rolling restart silently faulting
     //     work that never actually failed;
-    //   - settlement retries (WriteWithRetryAsync) would give up on their first failure, dropping outcomes for
+    //   - settlement retries (SettlementWriter) would give up on their first failure, dropping outcomes for
     //     ripples that had just run successfully.
     // StopAsync arms this with CancelAfter(ShutdownDrainGrace), so both stages get the drain and one deadline
     // bounds the whole shutdown.
     private readonly CancellationTokenSource _drainCts = new(Timeout.InfiniteTimeSpan, time);
 
-    // Ripples this instance owns: posted and not yet <b>durably settled</b> (executed AND their outcome
-    // written). Held until settlement — not just until execution finishes — so a stalled settlement (see
-    // WriteWithRetryAsync) keeps the count high, shrinks the capacity the dispatcher claims against to zero,
-    // and stops it pulling more work. That also implicitly bounds the settlement channels: at most
-    // MaxConcurrency outcomes can be awaiting a write at once.
-    private int _inFlight;
-
-    // The attempts currently owned in-process (posted, not yet durably settled) — the ground truth the recovery
-    // loop reconciles against: a ripple the DB says is Running & claimed by us but which is NOT in here has been
-    // stranded (never reached a handler, or the block faulted), and self-recovery releases it.
-    //
-    // Keyed on (ripple id, ATTEMPT), not on ripple id. This instance can genuinely own two attempts of the same
-    // ripple at once: it stalls past HeartbeatTimeout while still inside ExecutionTimeout, a peer requeues the
-    // ripple, and it comes back under the same InstanceId and re-claims it. Keyed by id alone, attempt 2's Post
-    // overwrote attempt 1's entry and then attempt 1's settlement — which correctly no-ops against the store's
-    // attempt fence, but is still a completed write from the flush loop's point of view — REMOVED the key
-    // belonging to the live attempt 2. Self-recovery would then see a Running row it believes nothing is
-    // executing and requeue a ripple whose handler was still running, re-running it and burning an attempt.
-    private readonly ConcurrentDictionary<(Guid RippleId, int Attempt), byte> _inFlightIds = new();
-
-    public int ExecutingCount => Volatile.Read(ref _inFlight);
-
-    /// <summary>
-    /// Snapshot of the ripple ids this instance is actually executing/settling right now. Distinct: the DB row
-    /// has one current attempt, so an id must be reported as owned while ANY of its attempts is still live here.
-    /// </summary>
-    public IReadOnlyCollection<Guid> InFlightIds => _inFlightIds.Keys.Select(k => k.RippleId).Distinct().ToArray();
+    /// <summary>Attempts owned right now — executing, queued, or awaiting settlement (see <see cref="InFlightTracker"/>).</summary>
+    public int ExecutingCount => inFlight.Count;
 
     /// <summary>True once the execute block has faulted (its action threw and escaped) — the instance is alive
     /// but can no longer run anything, so it must fail fast. Null-safe before <see cref="Start"/>.</summary>
@@ -88,12 +66,16 @@ internal sealed class ExecutionPipeline(
     /// awaiting-settlement ripples against <see cref="PipelineDepth"/> — so the dispatcher keeps the execute
     /// block fed with a prefetch buffer, yet claims still pause when a stalled settlement fills the depth.
     /// </summary>
-    public int AvailableCapacity => Math.Max(0, PipelineDepth - Volatile.Read(ref _inFlight));
+    public int AvailableCapacity => Math.Max(0, PipelineDepth - inFlight.Count);
 
     // ---- lifecycle -------------------------------------------------------------------------------
 
+    /// <summary>Builds the execute block and starts settlement. Once only: a second call throws rather than
+    /// replacing the block, which would orphan everything queued in the first and start a second pair of flush
+    /// loops on the same channels.</summary>
     public void Start()
     {
+        _lifecycle.Start(nameof(ExecutionPipeline));
         metrics.SetExecutingProvider(() => ExecutingCount, _options.InstanceId);
         // MDOP = the execution parallelism; BoundedCapacity = the deeper pipeline, so prefetched ripples queue
         // in front of the block and start the instant a slot frees (no starvation between polls/settlements).
@@ -103,15 +85,7 @@ internal sealed class ExecutionPipeline(
             BoundedCapacity = PipelineDepth
         });
 
-        _loops =
-        [
-            Task.Run(() => FlushLoopAsync(_succeeded.Reader, _options.SucceededBatchSize,
-                (b, c) => splashStore.CompleteRipplesAsync(b, _options.InstanceId, c),
-                r => (r.RippleId, r.Attempt)), CancellationToken.None),
-            Task.Run(() => FlushLoopAsync(_failed.Reader, _options.FailedBatchSize,
-                (b, c) => splashStore.FailRipplesAsync(b, _options.InstanceId, c),
-                r => (r.RippleId, r.Attempt)), CancellationToken.None)
-        ];
+        settlement.Start(_drainCts.Token);
     }
 
     /// <summary>
@@ -121,22 +95,26 @@ internal sealed class ExecutionPipeline(
     /// </summary>
     public bool Post(PreparedRipple ripple)
     {
-        _inFlightIds[(ripple.RippleId, ripple.Attempt)] = 0;
-        Interlocked.Increment(ref _inFlight);
-        if (_execute.Post(ripple))
+        var execute = _execute ?? throw Lifecycle.NotStarted(nameof(ExecutionPipeline), "accept ripples");
+        inFlight.Track(ripple.RippleId, ripple.Attempt);
+        if (execute.Post(ripple))
         {
             return true;
         }
 
         // Refused (block completing or faulted): drop it from the owned set so self-recovery will release the
         // DB row rather than treating us as its live owner.
-        _inFlightIds.TryRemove((ripple.RippleId, ripple.Attempt), out _);
-        Interlocked.Decrement(ref _inFlight);
+        inFlight.Release([(ripple.RippleId, ripple.Attempt)]);
         return false;
     }
 
+    /// <summary>Drains and settles everything in flight, bounded by <see cref="RippleEngineOptions.ShutdownDrainGrace"/>.
+    /// Requires <see cref="Start"/>, and runs once: the drain clock is disposed at the end.</summary>
     public async Task StopAsync()
     {
+        _lifecycle.Stop(nameof(ExecutionPipeline));
+        var execute = _execute!; // Stop succeeded, so Start ran
+
         // ONE timer bounds the whole shutdown. Both stages observe _drainCts — the handlers (so in-flight
         // ripples finish instead of being cancelled) and the settlement retry backoff (so outcomes produced
         // during the drain still get written through a transient DB failure). Capping both with a single
@@ -144,13 +122,11 @@ internal sealed class ExecutionPipeline(
         // would let a slow drain plus a slow settle add up past it and get the process hard-killed mid-write.
         _drainCts.CancelAfter(_options.ShutdownDrainGrace);
 
-        _execute.Complete();
-        try { await _execute.Completion; } catch { /* faulted block — outcomes already recorded per-item */ }
+        execute.Complete();
+        try { await execute.Completion; } catch { /* faulted block — outcomes already recorded per-item */ }
 
-        // Close the channels so the flush loops drain what the handlers just produced and exit.
-        _succeeded.Writer.TryComplete();
-        _failed.Writer.TryComplete();
-        try { await Task.WhenAll(_loops); } catch { /* logged inside loops */ }
+        // The block has drained, so nothing produces another outcome: settle what the handlers just produced.
+        await settlement.CompleteAsync();
 
         if (_drainCts.IsCancellationRequested)
         {
@@ -178,7 +154,7 @@ internal sealed class ExecutionPipeline(
         // The context carries the wave + this ripple's id so a handler can expand the wave (spawn child
         // ripples parented to this one) via a generator's Continue(context). LOAD-BEARING ORDERING: a handler's
         // Continue commits its child ripples (a self-contained transaction, during Run() below) STRICTLY BEFORE
-        // this ripple is settled out of 'Running' (settlement happens later, via the flush loop, after Run()
+        // this ripple is settled out of 'Running' (settlement happens later, via SettlementWriter, after Run()
         // returns). So this parent stays Running throughout the expansion — refresh_wave_stats() can never see the
         // wave drained mid-expansion, and completion/compaction can't race the newly-added work. This is why
         // ripples may only be added to an existing wave via Continue(context): a Running parent guarantees the
@@ -226,27 +202,22 @@ internal sealed class ExecutionPipeline(
 
         if (!failed)
         {
-            _succeeded.Writer.TryWrite(new RippleCompletion(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, endedAt));
+            settlement.Succeeded(new RippleCompletion(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, endedAt));
             metrics.Succeeded(elapsedMs, ripple.TypeKey);
         }
         else
         {
-            var terminal = ripple.Attempt >= ripple.MaxAttempts;
-            DateTimeOffset? nextAttemptAt = terminal ? null : endedAt + Backoff(ripple.Attempt);
-            _failed.Writer.TryWrite(new RippleFailure(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, terminal, nextAttemptAt, endedAt));
+            DateTimeOffset? nextAttemptAt = retryPolicy.NextDelay(ripple.Attempt, ripple.MaxAttempts) is { } delay
+                ? endedAt + delay
+                : null;
+            var terminal = nextAttemptAt is null;
+            settlement.Failed(new RippleFailure(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, terminal, nextAttemptAt, endedAt));
             metrics.Failed(elapsedMs, ripple.TypeKey);
         }
 
-        // NB: _inFlight is NOT decremented here — the ripple stays "owned" until its outcome is durably
-        // written (the flush loop decrements on a successful settlement). This is what turns a settlement
+        // NB: the in-flight slot is NOT released here — the ripple stays "owned" until its outcome is durably
+        // written (SettlementWriter releases it on a successful write). This is what turns a settlement
         // backlog into claim back-pressure.
-    }
-
-    private TimeSpan Backoff(int attempt)
-    {
-        var factor = Math.Pow(2, Math.Max(0, attempt - 1));
-        var ms = Math.Min(_options.RetryBackoff.TotalMilliseconds * factor, _options.MaxRetryBackoff.TotalMilliseconds);
-        return TimeSpan.FromMilliseconds(ms);
     }
 
     private static string Flatten(Exception error)
@@ -258,76 +229,5 @@ internal sealed class ExecutionPipeline(
         }
 
         return string.Join(" -> ", messages);
-    }
-
-    // ---- batched completion writers --------------------------------------------------------------
-
-    private async Task FlushLoopAsync<T>(ChannelReader<T> reader, int batchSize,
-        Func<IReadOnlyList<T>, CancellationToken, Task> write, Func<T, (Guid RippleId, int Attempt)> keyOf)
-    {
-        var batch = new List<T>(batchSize);
-        // Read until the writer completes (StopAsync), independent of the stop token, so every buffered
-        // outcome is settled even during shutdown.
-        while (await reader.WaitToReadAsync())
-        {
-            batch.Clear();
-            while (batch.Count < batchSize && reader.TryRead(out var item))
-            {
-                batch.Add(item);
-            }
-
-            // Release the owned slots only once the outcome is durably written; a stalled settlement holds
-            // them, which is exactly the back-pressure that pauses claiming.
-            if (await WriteWithRetryAsync(batch, write))
-            {
-                foreach (var item in batch)
-                {
-                    _inFlightIds.TryRemove(keyOf(item), out _);
-                }
-
-                Interlocked.Add(ref _inFlight, -batch.Count);
-            }
-        }
-    }
-
-    private async Task<bool> WriteWithRetryAsync<T>(IReadOnlyList<T> batch, Func<IReadOnlyList<T>, CancellationToken, Task> write)
-    {
-        var delay = _options.SettlementRetryDelay;
-        while (true)
-        {
-            try
-            {
-                await write(batch, CancellationToken.None);
-                return true;
-            }
-            catch (Exception e)
-            {
-                // Never drop a settled outcome while we're alive: recovery only reclaims *dead* instances,
-                // so a live instance's dropped settlement would leave executed ripples stuck Running
-                // forever. Retry with backoff until it lands.
-                logger.LogError(e, "Ripple settlement failed for {Count} row(s); retrying", batch.Count);
-                try
-                {
-                    // The DRAIN token, not the host's stop token. The host cancels its token BEFORE StopAsync
-                    // even begins the drain, so backing off on it meant the first settlement failure of a
-                    // shutdown dropped the batch with zero retries — precisely when handlers are deliberately
-                    // kept running to finish cleanly, and precisely when a restart makes a transient DB error
-                    // most likely. Retries now persist for the full ShutdownDrainGrace.
-                    await Task.Delay(delay, time, _drainCts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Drain grace exhausted — stop retrying. These ripples stay Running (still counted
-                    // in-flight) and recovery re-runs them once this instance's heartbeat goes stale
-                    // (handlers are idempotent).
-                    logger.LogWarning(
-                        "Shutdown with {Count} unsettled outcome(s); recovery will re-run them", batch.Count);
-                    return false;
-                }
-
-                delay = TimeSpan.FromMilliseconds(
-                    Math.Min(delay.TotalMilliseconds * 2, _options.MaxSettlementRetryDelay.TotalMilliseconds));
-            }
-        }
     }
 }

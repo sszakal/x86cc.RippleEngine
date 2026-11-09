@@ -17,7 +17,7 @@ namespace x86cc.RippleEngine.Engine;
 /// </summary>
 internal sealed class RecoveryLoop(
     IEngineStore engine,
-    ExecutionPipeline pipeline,
+    InFlightTracker inFlight,
     IOptions<RippleEngineOptions> options,
     TimeProvider time,
     ILogger<RecoveryLoop> logger)
@@ -38,9 +38,9 @@ internal sealed class RecoveryLoop(
         }
 
         // Release any of OUR OWN claims the execute block isn't actually running (past the grace
-        // window), gated on the pipeline's live in-flight set so genuinely-executing ripples are kept.
+        // window), gated on the live in-flight set so genuinely-executing (or still-settling) ripples are kept.
         var reclaimed = await engine.RecoverSelfStrandedAsync(
-            _options.InstanceId, pipeline.InFlightIds, _options.SelfReconcileGrace, stoppingToken);
+            _options.InstanceId, inFlight.RippleIds, _options.SelfReconcileGrace, stoppingToken);
         if (reclaimed > 0)
         {
             Logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);

@@ -24,7 +24,7 @@ namespace x86cc.RippleEngine.Storage;
 /// <c>order by schedule_order</c>, drains the whole type before anything else progresses. The dashboard's PUT
 /// already rejects it; so does this, so the two agree.</item>
 /// <item><c>max_attempts &lt; 1</c> makes a ripple that is claimed, runs once, and is then terminally Failed
-/// whatever it returns — <c>ExecutionPipeline</c> settles it terminal on <c>attempt &gt;= max_attempts</c>, which
+/// whatever it returns — <c>ExponentialRetryPolicy</c> makes it terminal on <c>attempt &gt;= max_attempts</c>, which
 /// is already true of the first attempt. The wave faults rather than doing its work. (The claim itself has no
 /// <c>max_attempts</c> predicate — <c>PollSql</c> only projects the resolved value out for the pipeline and
 /// recovery to enforce.)</item>

@@ -187,7 +187,10 @@ Why it's shaped this way:
 
 ## 5. Execution — the TPL pipeline and back-pressure
 
-`ExecutionPipeline` runs the claimed ripples through a single bounded `ActionBlock<PreparedRipple>`:
+`ExecutionPipeline` runs the claimed ripples through a single bounded `ActionBlock<PreparedRipple>`, and owns
+the shutdown drain. It delegates three things: which attempts this instance owns (`InFlightTracker`), whether a
+failed attempt retries and when (`IRetryPolicy`, default `ExponentialRetryPolicy`), and writing outcomes in
+batches with retry (`SettlementWriter`):
 
 ```
 Dispatcher (1 per instance)                 ExecutionPipeline
@@ -196,7 +199,7 @@ Dispatcher (1 per instance)                 ExecutionPipeline
     refill immediately if it filled            per ripple: DI scope → resolve handler by type_key
                                                → run with ExecutionTimeout → success/failure channel
                                                      │
-                                     batched flush loops write splashes (1 round trip / batch)
+                                     SettlementWriter: batched flush loops write splashes (1 round trip / batch)
 ```
 
 - **MDOP vs depth (the saturation fix).** Execution parallelism is `MaxConcurrency`, but the block's

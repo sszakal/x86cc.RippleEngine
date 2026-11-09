@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -14,8 +16,8 @@ namespace x86cc.RippleEngine.Tests;
 
 /// <summary>
 /// The engine's time-driven behaviour, checked against a <see cref="FakeTimeProvider"/> instead of the wall clock:
-/// the execution timeout, the retry backoff stamp, the recorded duration, the shutdown drain grace and the loop
-/// cadence. Components are built directly with an in-memory splash store — no host, no Postgres — so time only
+/// the execution timeout, the retry backoff stamp, the recorded duration, the shutdown drain grace, the settlement
+/// write retry and the loop cadence. Components are built directly with an in-memory splash store — no host, no Postgres — so time only
 /// moves when the test says so and every timestamp is asserted EXACTLY. The real waits left here only let async
 /// continuations run; nothing asserts on how long they took.
 /// </summary>
@@ -153,6 +155,134 @@ public sealed class ClockDrivenTests
         _store.Failed.Count.ShouldBe(1, "the cancelled attempt's outcome is still written");
     }
 
+    /// <summary>A failed settlement write is retried on the clock — 250ms, then doubled — and the attempt keeps its
+    /// in-flight slot (the dispatcher's back-pressure) until the write actually lands.</summary>
+    [Fact]
+    public async Task a_failed_settlement_retries_with_doubling_delay_and_holds_the_slot_until_it_lands()
+    {
+        var options = Options.Create(new RippleEngineOptions
+        {
+            InstanceId = "clock-test", SettlementRetryDelay = TimeSpan.FromMilliseconds(250)
+        });
+        var inFlight = new InFlightTracker();
+        var settlement = BuildSettlement(options, inFlight);
+        using var drain = new CancellationTokenSource();
+        settlement.Start(drain.Token);
+        _store.FailNextWrites = 2;
+
+        var rippleId = Guid.NewGuid();
+        inFlight.Track(rippleId, attempt: 1);
+        settlement.Succeeded(new RippleCompletion(rippleId, Guid.NewGuid(), 1, _time.GetUtcNow(), null));
+
+        await WaitUntilAsync(() => _time.TimersCreated == 1); // first write failed, backing off 250ms
+        _time.Advance(TimeSpan.FromMilliseconds(250));
+        await WaitUntilAsync(() => _time.TimersCreated == 2); // second write failed, backing off 500ms
+        _time.Advance(TimeSpan.FromMilliseconds(500) - TimeSpan.FromTicks(1));
+        _store.Completed.ShouldBeEmpty();
+        inFlight.Count.ShouldBe(1, "an unwritten outcome keeps its slot");
+
+        _time.Advance(TimeSpan.FromTicks(1));
+        (await SingleAsync(_store.Completed)).RippleId.ShouldBe(rippleId);
+        await WaitUntilAsync(() => inFlight.Count == 0);
+        inFlight.RippleIds.ShouldBeEmpty();
+
+        await settlement.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>Past the drain deadline a failing write stops retrying, and the attempt stays owned — recovery, not
+    /// a dropped outcome, is what settles it.</summary>
+    [Fact]
+    public async Task the_drain_deadline_stops_settlement_retries_and_leaves_the_attempt_owned()
+    {
+        var options = Options.Create(new RippleEngineOptions { InstanceId = "clock-test" });
+        var inFlight = new InFlightTracker();
+        var settlement = BuildSettlement(options, inFlight);
+        using var drain = new CancellationTokenSource();
+        settlement.Start(drain.Token);
+        _store.FailNextWrites = int.MaxValue;
+
+        var rippleId = Guid.NewGuid();
+        inFlight.Track(rippleId, attempt: 1);
+        settlement.Failed(new RippleFailure(rippleId, Guid.NewGuid(), 1, _time.GetUtcNow(), null, true, null));
+        await WaitUntilAsync(() => _time.TimersCreated == 1);
+
+        var complete = settlement.CompleteAsync();
+        complete.IsCompleted.ShouldBeFalse("still retrying inside the drain grace");
+        await drain.CancelAsync();
+        await complete.WaitAsync(TimeSpan.FromSeconds(10));
+
+        inFlight.Count.ShouldBe(1);
+        inFlight.RippleIds.ShouldBe([rippleId]);
+    }
+
+    /// <summary>The pipeline is one-shot. A second Start used to replace the execute block (orphaning whatever was
+    /// queued in the first) and start a second pair of flush loops; use before Start was a NullReferenceException.</summary>
+    [Fact]
+    public async Task the_pipeline_starts_once_stops_once_and_refuses_work_before_start()
+    {
+        var unstarted = BuildPipeline(start: false);
+        Should.Throw<InvalidOperationException>(() => unstarted.Post(Ripple(attempt: 1, maxAttempts: 3)))
+            .Message.ShouldContain("must be started");
+        (await Should.ThrowAsync<InvalidOperationException>(unstarted.StopAsync)).Message.ShouldContain("must be started");
+        unstarted.IsFaulted.ShouldBeFalse();
+
+        var pipeline = BuildPipeline();
+        Should.Throw<InvalidOperationException>(pipeline.Start).Message.ShouldContain("already been started");
+
+        await StopAsync(pipeline);
+        (await Should.ThrowAsync<InvalidOperationException>(pipeline.StopAsync)).Message.ShouldContain("already been stopped");
+    }
+
+    [Fact]
+    public async Task settlement_starts_once_and_cannot_complete_unstarted()
+    {
+        var options = Options.Create(new RippleEngineOptions { InstanceId = "clock-test" });
+
+        // Completing without loops would return as if every buffered outcome had been written.
+        var unstarted = BuildSettlement(options, new InFlightTracker());
+        await Should.ThrowAsync<InvalidOperationException>(unstarted.CompleteAsync);
+
+        var settlement = BuildSettlement(options, new InFlightTracker());
+        settlement.Start(CancellationToken.None);
+        Should.Throw<InvalidOperationException>(() => settlement.Start(CancellationToken.None));
+        await settlement.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>A failed poll cycle (the DB down) retries after exactly <see cref="RippleEngineOptions.DispatchErrorDelay"/>,
+    /// with the fallback heartbeat attempted in between.</summary>
+    [Fact]
+    public async Task a_failed_dispatch_cycle_retries_after_the_configured_error_delay()
+    {
+        var delay = TimeSpan.FromSeconds(7);
+        var options = Options.Create(new RippleEngineOptions
+        {
+            InstanceId = "clock-test", MaxConcurrency = 1, DispatchErrorDelay = delay
+        });
+        var store = DownEngineStore.Create(_time);
+        var registry = new RippleHandlerRegistry();
+        var inFlight = new InFlightTracker();
+        var pipeline = new ExecutionPipeline(options, registry, new ServiceCollection().BuildServiceProvider()
+                .GetRequiredService<IServiceScopeFactory>(), inFlight, new ExponentialRetryPolicy(options),
+            BuildSettlement(options, inFlight), new RippleMetrics(), _time, NullLogger<ExecutionPipeline>.Instance);
+        using var dispatcher = new Dispatcher(pipeline, registry, store, new RippleMetrics(), options,
+            new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
+        var down = (DownEngineStore)(object)store;
+
+        await dispatcher.StartAsync(CancellationToken.None);
+
+        // The poll failed and the fallback beat was tried; wait until the error delay is actually armed.
+        await WaitUntilAsync(() => down.Calls("BeatAsync") == 1);
+        await WaitUntilAsync(() => _time.TimersCreated > down.TimersAtLastBeat);
+        down.Calls("PollAsync").ShouldBe(1);
+
+        _time.Advance(delay - TimeSpan.FromTicks(1));
+        down.Calls("PollAsync").ShouldBe(1, "no retry before the configured delay");
+        _time.Advance(TimeSpan.FromTicks(1));
+        await WaitUntilAsync(() => down.Calls("PollAsync") == 2);
+
+        await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public async Task a_periodic_loop_waits_its_interval_and_keeps_going_after_a_failed_tick()
     {
@@ -180,7 +310,7 @@ public sealed class ClockDrivenTests
 
     // ---- fixture ---------------------------------------------------------------------------------
 
-    private ExecutionPipeline BuildPipeline(Action<RippleEngineOptions>? configure = null)
+    private ExecutionPipeline BuildPipeline(Action<RippleEngineOptions>? configure = null, bool start = true)
     {
         var options = new RippleEngineOptions { InstanceId = "clock-test", MaxConcurrency = 1 };
         configure?.Invoke(options);
@@ -193,12 +323,21 @@ public sealed class ClockDrivenTests
         var registry = new RippleHandlerRegistry();
         registry.Register<ClockHandler, ClockWave, ClockRipple>(batchSize: null, gapSeconds: 1, maxAttempts: null);
 
-        var pipeline = new ExecutionPipeline(Options.Create(options), registry,
-            services.GetRequiredService<IServiceScopeFactory>(), _store, new RippleMetrics(), _time,
+        var opts = Options.Create(options);
+        var inFlight = new InFlightTracker();
+        var pipeline = new ExecutionPipeline(opts, registry, services.GetRequiredService<IServiceScopeFactory>(),
+            inFlight, new ExponentialRetryPolicy(opts), BuildSettlement(opts, inFlight), new RippleMetrics(), _time,
             NullLogger<ExecutionPipeline>.Instance);
-        pipeline.Start();
+        if (start)
+        {
+            pipeline.Start();
+        }
+
         return pipeline;
     }
+
+    private SettlementWriter BuildSettlement(IOptions<RippleEngineOptions> options, InFlightTracker inFlight)
+        => new(options, _store, inFlight, _time, NullLogger<SettlementWriter>.Instance);
 
     private static PreparedRipple Ripple(int attempt, int maxAttempts)
         => new(Guid.NewGuid(), Guid.NewGuid(), attempt, maxAttempts, TypeKey, nameof(ClockRipple),
@@ -227,7 +366,7 @@ public sealed class ClockDrivenTests
 
     /// <summary>A fake clock that also counts the timers armed on it, so a test can wait until a component is
     /// actually waiting before advancing past its deadline.</summary>
-    private sealed class CountingTimeProvider() : FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero))
+    internal sealed class CountingTimeProvider() : FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero))
     {
         private int _timersCreated;
 
@@ -271,9 +410,13 @@ public sealed class ClockDrivenTests
         public ConcurrentQueue<RippleCompletion> Completed { get; } = new();
         public ConcurrentQueue<RippleFailure> Failed { get; } = new();
 
+        /// <summary>How many of the next writes throw (a transient DB outage) before they start landing.</summary>
+        public int FailNextWrites { get; set; }
+
         public Task CompleteRipplesAsync(IReadOnlyList<RippleCompletion> batch, string instanceId,
             CancellationToken ct = default)
         {
+            ThrowIfFailing();
             foreach (var c in batch) Completed.Enqueue(c);
             return Task.CompletedTask;
         }
@@ -281,9 +424,60 @@ public sealed class ClockDrivenTests
         public Task FailRipplesAsync(IReadOnlyList<RippleFailure> batch, string instanceId,
             CancellationToken ct = default)
         {
+            ThrowIfFailing();
             foreach (var f in batch) Failed.Enqueue(f);
             return Task.CompletedTask;
         }
+
+        private void ThrowIfFailing()
+        {
+            if (FailNextWrites > 0)
+            {
+                FailNextWrites--;
+                throw new InvalidOperationException("transient settlement failure");
+            }
+        }
+    }
+
+    /// <summary>An <see cref="IEngineStore"/> for a database that is down: every call throws. A proxy rather than
+    /// a hand-written fake, because the dispatcher only needs the calls to fail and be counted.</summary>
+    public class DownEngineStore : DispatchProxy
+    {
+        private readonly ConcurrentDictionary<string, int> _calls = new();
+        private CountingTimeProvider _time = default!;
+
+        /// <summary>The fake clock's timer count when the last heartbeat was attempted: any timer after that
+        /// is the error delay.</summary>
+        public int TimersAtLastBeat { get; private set; }
+
+        internal static IEngineStore Create(CountingTimeProvider time)
+        {
+            var store = Create<IEngineStore, DownEngineStore>();
+            ((DownEngineStore)(object)store)._time = time;
+            return store;
+        }
+
+        public int Calls(string method) => _calls.GetValueOrDefault(method);
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            var name = targetMethod!.Name;
+            if (name == "BeatAsync")
+            {
+                TimersAtLastBeat = _time.TimersCreated;
+            }
+
+            _calls.AddOrUpdate(name, 1, (_, n) => n + 1);
+            throw new InvalidOperationException("database is down");
+        }
+    }
+
+    private sealed class NoopLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() { }
     }
 
     private sealed class CountingLoop(TimeSpan interval, TimeProvider time)

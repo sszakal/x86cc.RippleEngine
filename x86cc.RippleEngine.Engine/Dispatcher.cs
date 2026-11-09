@@ -159,7 +159,7 @@ internal sealed class Dispatcher(
                     // shutdown. Swallow cancellation specifically; the while condition then exits the loop.
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(1), time, stoppingToken);
+                        await Task.Delay(_options.DispatchErrorDelay, time, stoppingToken);
                     }
                     catch (OperationCanceledException)
                     {

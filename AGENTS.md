@@ -96,7 +96,9 @@ sibling packages over the same Core abstractions:
   `Migrations/M0001_Schema` (the whole schema — one migration while the DB is ephemeral). `AddRippleStorage` is
   **internal** (visible to Hosting) — storage is never registered on its own.
 - **`x86cc.RippleEngine.Engine`** — the runtime. `Dispatcher` (the poller `BackgroundService`),
-  `ExecutionPipeline` (TPL `ActionBlock`), `RecoveryLoop`, `WaveStatsRefreshLoop`, `RippleHandlerRegistry`,
+  `ExecutionPipeline` (TPL `ActionBlock` + the shutdown drain; it delegates attempt ownership to `InFlightTracker`,
+  the retry decision to `IRetryPolicy`/`ExponentialRetryPolicy`, and batched, retried splash writes to
+  `SettlementWriter`), `RecoveryLoop`, `WaveStatsRefreshLoop`, `RippleHandlerRegistry`,
   `RippleContext` (the internal `IRippleContext` impl), `RippleEngineOptions`, `RippleMetrics`, `ScheduleSeeder`,
   `RippleEngineExtensions` — whose `AddRippleEngine(IServiceCollection, …)` is **internal** (visible to Hosting);
   the public surface here is `IRippleEngineBuilder.AddHandler<TWave,TRipple,THandler>()`. Depends on Core + Storage.
@@ -164,7 +166,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
    read at claim time, not stamped on the ripple.
 5. **Execute** (`ExecutionPipeline`): claimed ripples flow into a bounded `ActionBlock` (MDOP =
    `MaxConcurrency`, with a `PrefetchFactor` input buffer). The handler runs in a per-ripple DI scope; throw =
-   failed (retry with backoff, then terminal), return = succeeded. Outcomes batch-write via channels.
+   failed (retry with backoff via `IRetryPolicy`, then terminal), return = succeeded. Outcomes batch-write via
+   `SettlementWriter`'s channels, and an attempt keeps its `InFlightTracker` slot until its write lands.
 6. **Settle** (`SplashStore`): records a per-attempt `splash` and flips the ripple's terminal state — fenced on
    `claimed_by` + `state='Running'` + `attempt` (the attempt matters: a stalled instance is reclaimed, comes
    back under the same `InstanceId`, and can re-claim the same ripple, so owner+state alone would let its stale
@@ -197,7 +200,7 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
 - Recovery is two-pronged: `RecoverStaleAsync` reclaims **dead** instances (heartbeat stale past
   `HeartbeatTimeout`), and `RecoverSelfStrandedAsync` (run by the same `RecoveryLoop`) reclaims an instance's
   **own** claims that the execute block isn't actually running — the DB says `Running & claimed_by=me` but the
-  id isn't in `ExecutionPipeline.InFlightIds`, past a `SelfReconcileGrace` window (covers the claim→enqueue gap).
+  id isn't in `InFlightTracker.RippleIds`, past a `SelfReconcileGrace` window (covers the claim→enqueue gap).
   That closes the gap where a *live* instance strands its own work (a claim that never reached a handler, or one
   lost to a fault/race) — dead-owner recovery alone can't rescue those. And if the execute block **faults** (its
   action throws and escapes), the `Dispatcher` detects `pipeline.IsFaulted`, releases all its claims, and calls

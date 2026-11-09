@@ -80,6 +80,8 @@ public static class RippleEngineExtensions
             $"{nameof(RippleEngineOptions.PauseReconcileMaxRowsPerPass)} must be > 0");
         optionsBuilder.Validate(o => o.ExecutionTimeout > TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.ExecutionTimeout)} must be positive");
+        optionsBuilder.Validate(o => o.DispatchErrorDelay > TimeSpan.Zero,
+            $"{nameof(RippleEngineOptions.DispatchErrorDelay)} must be positive");
         optionsBuilder.Validate(o => o.ShutdownDrainGrace > TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.ShutdownDrainGrace)} must be positive");
         optionsBuilder.Validate(o => o.HeartbeatTimeout > o.HeartbeatInterval,
@@ -95,6 +97,11 @@ public static class RippleEngineExtensions
         if (enableWorkers)
         {
             services.AddSingleton<RippleMetrics>();
+            // The execution stage and the three parts it delegates to: attempt ownership (also read by recovery),
+            // the retry decision, and batched settlement.
+            services.AddSingleton<InFlightTracker>();
+            services.AddSingleton<IRetryPolicy, ExponentialRetryPolicy>();
+            services.AddSingleton<SettlementWriter>();
             services.AddSingleton<ExecutionPipeline>();
 
             // Seed each registered type's batch/gap before the dispatcher starts claiming.

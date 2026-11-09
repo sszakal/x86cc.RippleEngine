@@ -220,6 +220,18 @@ public sealed class FacadeTests
         }
     }
 
+    /// <summary>A zero error delay would spin the dispatcher in a hot loop of errors against a down database, so
+    /// it is refused at startup.</summary>
+    [Fact]
+    public void a_non_positive_dispatch_error_delay_is_refused()
+    {
+        using var host = Build(o => o.DispatchErrorDelay = TimeSpan.Zero);
+
+        var ex = Should.Throw<OptionsValidationException>(
+            () => host.Services.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
+        ex.Message.ShouldContain(nameof(RippleEngineOptions.DispatchErrorDelay));
+    }
+
     // A deterministic "something else, but still valid": every knob is a positive count or duration, so nudging
     // it upwards keeps the options-validation rules satisfied.
     private static object? Mutate(object? current) => current switch
