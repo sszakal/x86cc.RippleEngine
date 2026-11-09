@@ -3,6 +3,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { RippleLogoComponent } from './core/ripple-logo.component';
 
 const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
+const THEME_KEY = 'ripple.theme';
 
 @Component({
   selector: 'app-root',
@@ -86,6 +87,26 @@ const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
             @if (!collapsed()) { <span>Settings</span> }
           </a>
         </nav>
+        <div class="flex-1"></div>
+        <button type="button" (click)="toggleTheme()"
+                [attr.aria-label]="dark() ? 'Switch to light theme' : 'Switch to dark theme'"
+                [attr.aria-pressed]="dark()"
+                [title]="dark() ? 'Switch to light theme' : 'Switch to dark theme'"
+                class="flex items-center justify-center rounded-lg px-3 py-2 text-gray-600"
+                [class.justify-center]="collapsed()">
+          @if (dark()) {
+            <svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+            </svg>
+          } @else {
+            <svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20.2 15.2A8.5 8.5 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z" />
+            </svg>
+          }
+        </button>
       </aside>
 
       <!-- Main -->
@@ -99,9 +120,24 @@ const COLLAPSE_KEY = 'ripple.sidebar.collapsed';
 })
 export class AppComponent {
   readonly collapsed = signal(localStorage.getItem(COLLAPSE_KEY) === '1');
+  readonly dark = signal(localStorage.getItem(THEME_KEY) === 'dark');
+
+  constructor() {
+    this.applyTheme();
+  }
 
   toggleSidebar(): void {
     this.collapsed.update((c) => !c);
     localStorage.setItem(COLLAPSE_KEY, this.collapsed() ? '1' : '0');
+  }
+
+  toggleTheme(): void {
+    this.dark.update((isDark) => !isDark);
+    localStorage.setItem(THEME_KEY, this.dark() ? 'dark' : 'light');
+    this.applyTheme();
+  }
+
+  private applyTheme(): void {
+    document.documentElement.classList.toggle('dark', this.dark());
   }
 }
