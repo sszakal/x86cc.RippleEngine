@@ -33,7 +33,7 @@ internal sealed class EfWaveBuilder(
         // EF projects to relational columns; turn each row into a jsonb `data` payload keyed by the projected
         // member names (the SELECT aliases), which the handler deserializes case-insensitively.
         var dataSql = $"select to_jsonb(_ef) as data from ({TrimInner(command.CommandText)}) as _ef";
-        AddSpec(typeof(TMessage).Name, dataSql, command);
+        AddSpec(RippleTypeName.Of<TMessage>(), dataSql, command);
         return this;
     }
 
@@ -60,7 +60,7 @@ internal sealed class EfWaveBuilder(
             ) as _b
             group by (rn - 1) / {batchSize}
             """;
-        AddSpec(typeof(TBatch).Name, dataSql, command);
+        AddSpec(RippleTypeName.Of<TBatch>(), dataSql, command);
         return this;
     }
 

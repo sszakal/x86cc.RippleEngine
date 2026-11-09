@@ -19,9 +19,9 @@ internal readonly record struct RippleInvocation(string[] TargetIds, Func<Task<S
 /// Maps a ripple's composite <c>type_key</c> — the <c>"{waveType}|{rippleType}"</c> pair — to the code that
 /// deserializes both payloads and invokes the developer's <see cref="IRippleHandler{TWave,TRipple}"/>.
 /// Populated at startup by <c>AddHandler</c>; the key is
-/// <c>RippleTypeKey.Compose(typeof(TWave).Name, typeof(TRipple).Name)</c>, which must match the
-/// <c>type_key</c> stamped on the ripple at fan-out time or the ripple has no handler. Each registration also
-/// records the type's optional batch/gap for seeding into <c>type_schedule</c>.
+/// <c>RippleTypeKey.Compose(RippleTypeName.Of&lt;TWave&gt;(), RippleTypeName.Of&lt;TRipple&gt;())</c> — the same
+/// resolver every generator stamps with — so it matches the <c>type_key</c> written at fan-out time. Each
+/// registration also records the type's optional batch/gap for seeding into <c>type_schedule</c>.
 /// </summary>
 public sealed class RippleHandlerRegistry
 {
@@ -33,13 +33,31 @@ public sealed class RippleHandlerRegistry
     private readonly Dictionary<string, Func<IServiceProvider, JsonDocument?, JsonDocument, IRippleContext, RippleInvocation>>
         _invokers = new();
 
+    // Which CLR (wave, ripple) pair owns each key, to tell a harmless re-registration of the same pair
+    // (last-wins) from two different types that resolve to one name (see Register).
+    private readonly Dictionary<string, (Type Wave, Type Ripple)> _owners = new();
+
     private readonly List<TypeScheduleConfig> _schedules = new();
 
     internal void Register<THandler, TWave, TRipple>(int? batchSize, double gapSeconds, int? maxAttempts)
         where THandler : class, IRippleHandler<TWave, TRipple>
         where TRipple : IRippleTarget
     {
-        var key = RippleTypeKey.Compose(typeof(TWave).Name, typeof(TRipple).Name);
+        var key = RippleTypeKey.Compose(RippleTypeName.Of<TWave>(), RippleTypeName.Of<TRipple>());
+
+        // Fail at the AddHandler call site on a name collision — e.g. Billing.Invoice and Tax.Invoice, which share
+        // a CLR name. Last-wins would silently route BOTH types' ripples to whichever handler registered second,
+        // deserializing one type's payload as the other. [RippleType("…")] gives one of them a distinct name.
+        var owner = (typeof(TWave), typeof(TRipple));
+        if (_owners.TryGetValue(key, out var existing) && existing != owner)
+        {
+            throw new InvalidOperationException(
+                $"Type key '{key}' is already registered for ({existing.Wave.FullName}, {existing.Ripple.FullName}); "
+                + $"({owner.Item1.FullName}, {owner.Item2.FullName}) resolves to the same key. Give one of the types a "
+                + "distinct name with [RippleType(\"…\")].");
+        }
+
+        _owners[key] = owner;
         _invokers[key] = (sp, wavePayload, ripplePayload, context) =>
         {
             var handler = sp.GetRequiredService<THandler>();

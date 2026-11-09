@@ -22,7 +22,7 @@ internal sealed class EfWaveGenerator(RippleDataSource dataSource) : IEfWaveGene
 
     public IWaveBuilder Create<TWave>(DbContext context, string name, TWave wavePayload)
         where TWave : notnull
-        => new EfWaveBuilder(context, dataSource, name, typeof(TWave).Name,
+        => new EfWaveBuilder(context, dataSource, name, RippleTypeName.Of<TWave>(),
             JsonSerializer.Serialize(wavePayload, typeof(TWave), Json),
             Guid.NewGuid(), parentRippleId: null, continueExisting: false);
 

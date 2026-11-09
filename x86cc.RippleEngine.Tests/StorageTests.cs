@@ -39,6 +39,30 @@ public sealed class StorageTests : RippleTestBase
     }
 
     [Fact]
+    public async Task claim_only_takes_the_type_keys_the_caller_handles()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 3);
+        await SeedRipplesOfTypeAsync(wave.Id, 2, "OtherRipple");
+        var handled = RippleTypeKey.Compose(nameof(RecalcContext), nameof(RecalcCompany));
+        var other = RippleTypeKey.Compose(nameof(RecalcContext), "OtherRipple");
+
+        var claimed = await Engine.PollAsync(100, "inst-1", 0, [handled]);
+
+        claimed.Count.ShouldBe(3);
+        claimed.ShouldAllBe(r => r.TypeKey == handled);
+        // The unhandled type was neither claimed nor charged an attempt — it waits for an instance that can run it.
+        (await ScalarAsync(
+            "select count(*) from ripple.ripple where type_key = @other and state = 'Pending' and attempt = 0",
+            new { other })).ShouldBe(2);
+
+        // An instance with no handlers claims nothing (but still beats); a null filter claims everything.
+        (await Engine.PollAsync(100, "inst-2", 0, [])).Count.ShouldBe(0);
+        (await Engine.PollAsync(100, "inst-3", 0)).ShouldAllBe(r => r.TypeKey == other);
+    }
+
+    [Fact]
     public async Task poll_writes_a_heartbeat_even_when_it_claims_nothing()
     {
         await ResetAsync();

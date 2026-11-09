@@ -20,7 +20,7 @@ public interface ICollectionWaveGenerator
 
     /// <summary>
     /// Start a brand-new wave carrying a typed <paramref name="wavePayload"/> — the shared "event" seen by
-    /// every ripple. It is serialised once onto the wave row, and <c>typeof(TWave).Name</c> becomes the wave's
+    /// every ripple. It is serialised once onto the wave row, and <c>TWave</c>'s <see cref="RippleTypeName"/> becomes the wave's
     /// <c>Type</c>/<c>PayloadType</c> discriminator (the wave half of each ripple's scheduling <c>type_key</c>).
     /// </summary>
     ICollectionWaveBuilder Create<TWave>(string name, TWave wavePayload)
@@ -42,7 +42,7 @@ public static class CollectionWaveGeneratorExtensions
     /// <summary>
     /// <b>Fire a single job and task</b>: create a wave carrying <paramref name="wavePayload"/> (the event)
     /// with exactly one ripple (<paramref name="ripple"/>, the target) and dispatch it in one call. The
-    /// composite handler key is <c>"{typeof(TWave).Name}|{typeof(TRipple).Name}"</c> — the same one an
+    /// composite handler key is <c>"{waveType}|{rippleType}"</c> (each from <see cref="RippleTypeName"/>) — the same one an
     /// <c>AddHandler&lt;TWave, TRipple, THandler&gt;</c> registers. Returns the created (Active) wave so the
     /// caller can track it to completion.
     /// </summary>

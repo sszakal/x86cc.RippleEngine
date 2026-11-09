@@ -17,7 +17,7 @@ public interface IMartenWaveGenerator
     /// <summary>
     /// Start a brand-new wave carrying a typed <paramref name="wavePayload"/> — the shared "event" common
     /// to every ripple (e.g. the legislation that changed, or migration-run audit info). It is serialised
-    /// once onto the wave row (not duplicated into each ripple), and <c>typeof(TWave).Name</c> becomes the
+    /// once onto the wave row (not duplicated into each ripple), and <c>TWave</c>'s <see cref="RippleTypeName"/> becomes the
     /// wave's <c>Type</c>/<c>PayloadType</c> discriminator. A handler receives it alongside the per-ripple payload.
     /// </summary>
     IWaveBuilder Create<TWave>(IQuerySession session, string name, TWave wavePayload)

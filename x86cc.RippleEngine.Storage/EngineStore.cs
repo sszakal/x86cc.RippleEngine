@@ -168,8 +168,15 @@ public interface IEngineStore
     /// disjoint slices. Each returned ripple carries its wave's shared payload (joined in the same query). No
     /// counters move on the claim — the wave's live numbers are recomputed by <see cref="TryRefreshWaveStatsAsync"/>.
     /// </summary>
+    /// <param name="typeKeys">
+    /// The <c>type_key</c>s this instance has a handler for; only those are claimed. Null claims every type
+    /// (storage-level callers). The engine always passes its registry: an instance that claimed a type it can't
+    /// run would fail it ("no handler") and burn an attempt per pass until the ripple is terminally Failed —
+    /// even though a peer that DOES handle it (a rolling deploy, or workers dedicated to different types) could
+    /// have run it. Unhandled ripples now simply stay Pending for whichever instance can.
+    /// </param>
     Task<IReadOnlyList<ClaimedRipple>> PollAsync(int limit, string instanceId, int executing,
-        CancellationToken ct = default);
+        IReadOnlyCollection<string>? typeKeys = null, CancellationToken ct = default);
 
     // ---- stats ----------------------------------------------------------------------------------
 
@@ -839,6 +846,11 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
                   -- them). No type_schedule row is locked (a sub-SELECT is not covered by this statement's FOR
                   -- UPDATE, which fences ripple only).
                   and type_key <> all (select type_key from {S}.type_schedule where pause_state = 'paused')
+                  -- Handler affinity: only the types this instance can execute (null = all, for storage-level
+                  -- callers). In a homogeneous cluster every row passes and this is free — the row is visited for
+                  -- the lock anyway. A type NO live instance handles sits at the index's left edge and is scanned
+                  -- past on every poll (the same bounded scan-past as a mid-pause type) until a handler appears.
+                  and (@typeKeys::text[] is null or type_key = any (@typeKeys::text[]))
                 order by schedule_order
                 for update skip locked
                 limit @limit
@@ -860,12 +872,12 @@ internal sealed class EngineStore(RippleDataSource dataSource) : IEngineStore
         """;
 
     public async Task<IReadOnlyList<ClaimedRipple>> PollAsync(int limit, string instanceId, int executing,
-        CancellationToken ct = default)
+        IReadOnlyCollection<string>? typeKeys = null, CancellationToken ct = default)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var claimed = await conn.QueryAsync<ClaimedRipple>(new CommandDefinition(
             PollSql,
-            new { me = instanceId, executing, limit = Math.Max(0, limit) },
+            new { me = instanceId, executing, limit = Math.Max(0, limit), typeKeys = typeKeys?.ToArray() },
             cancellationToken: ct));
         return claimed.AsList();
     }

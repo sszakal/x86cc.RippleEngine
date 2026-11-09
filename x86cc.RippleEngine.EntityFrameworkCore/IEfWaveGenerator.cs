@@ -17,7 +17,7 @@ public interface IEfWaveGenerator
 
     /// <summary>
     /// Start a brand-new wave carrying a typed <paramref name="wavePayload"/> — the shared "event" seen by
-    /// every ripple. It is serialised once onto the wave row, and <c>typeof(TWave).Name</c> becomes the wave's
+    /// every ripple. It is serialised once onto the wave row, and <c>TWave</c>'s <see cref="RippleTypeName"/> becomes the wave's
     /// <c>Type</c>/<c>PayloadType</c> discriminator.
     /// </summary>
     IWaveBuilder Create<TWave>(DbContext context, string name, TWave wavePayload)

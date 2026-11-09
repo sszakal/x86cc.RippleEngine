@@ -350,6 +350,75 @@ public sealed class EngineTests : RippleTestBase
             .ShouldBe(0, "the abandoned ripple must be reclaimed, not left Running forever");
     }
 
+    /// <summary>
+    /// An instance must not claim a type it has no handler for. It used to: the claim was type-blind, so the
+    /// ripple was failed "no handler registered", burning an attempt per pass until it was terminally Failed —
+    /// although a peer with the handler (mid rolling deploy, or a type-dedicated worker pool) could have run it.
+    /// </summary>
+    [Fact]
+    public async Task engine_leaves_ripples_it_has_no_handler_for_pending_for_a_peer()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 4);
+        await SeedRipplesOfTypeAsync(wave.Id, 3, "UnhandledRipple");
+
+        var sink = new ExecutionSink();
+        using var host = BuildHost(sink);
+        await host.StartAsync();
+        try
+        {
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+            while (await ScalarAsync("select count(*) from ripple.ripple where state = 'Succeeded'") < 4)
+            {
+                DateTimeOffset.UtcNow.ShouldBeLessThan(deadline, "the handled ripples never all succeeded");
+                await Task.Delay(100);
+            }
+
+            // Give the dispatcher a few more polls to (wrongly) pick up the unhandled type.
+            await Task.Delay(500);
+
+            (await ScalarAsync(
+                "select count(*) from ripple.ripple where payload_type = 'UnhandledRipple' and state = 'Pending' and attempt = 0"))
+                .ShouldBe(3, "the unhandled type must never be claimed, so it keeps every attempt for a capable peer");
+            (await ScalarAsync("select count(*) from ripple.splash where outcome = 'Failed'")).ShouldBe(0);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    /// <summary>
+    /// A payload class can be renamed without stranding work already in the database: ripples fanned out under
+    /// the old name (<c>payload_type = 'RecalcCompany'</c>) still run on a worker whose handler takes the
+    /// renamed class, because <c>[RippleType("RecalcCompany")]</c> pins its persisted name.
+    /// </summary>
+    [Fact]
+    public async Task a_renamed_payload_type_pinned_to_its_old_name_still_runs_existing_ripples()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        var ids = await SeedRipplesAsync(wave.Id, 5); // persisted as nameof(RecalcCompany)
+
+        var sink = new ExecutionSink();
+        using var host = BuildEngineHost(
+            engine => engine.AddHandler<RecalcContext, RenamedRecalcCompany, RenamedRecalcHandler>(),
+            services: services => services.AddSingleton(sink));
+        await host.StartAsync();
+        try
+        {
+            var final = await WaitForTerminalAsync(wave.Id, TimeSpan.FromSeconds(60));
+
+            final.Status.ShouldBe(WaveStatus.Completed);
+            sink.Executed.ToHashSet().SetEquals(ids).ShouldBeTrue();
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
     private IHost BuildHost(ExecutionSink sink, Action<RippleSetupOptions>? configure = null,
         ISplashStore? splashStore = null)
         => BuildEngineHost(

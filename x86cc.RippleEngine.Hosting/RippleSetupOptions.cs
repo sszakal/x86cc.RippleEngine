@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Engine;
 using x86cc.RippleEngine.Storage;
 
@@ -83,18 +84,18 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
     /// <c>expire_at</c> when the wave compacts; the retention purge deletes it from then on.
     /// </summary>
     /// <typeparam name="TWave">The wave payload type — the same type argument passed to the generator's
-    /// <c>Create</c>. Every generator stamps the wave's <c>type</c> as <c>typeof(TWave).Name</c>, so this is
+    /// <c>Create</c>. Every generator stamps the wave's <c>type</c> as its <see cref="RippleTypeName"/> name, so this is
     /// exactly the key compaction looks the retention up by.</typeparam>
     public RippleSetupOptions Retention<TWave>(TimeSpan retention) where TWave : notnull
     {
         if (retention <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(retention), retention,
-                $"Retention for {typeof(TWave).Name} must be positive — a wave would otherwise expire the "
+                $"Retention for {RippleTypeName.Of<TWave>()} must be positive — a wave would otherwise expire the "
                 + $"moment it compacts. Use {nameof(RetentionForever)}<{typeof(TWave).Name}>() to keep it forever.");
         }
 
-        return Retention(typeof(TWave).Name, retention);
+        return Retention(RippleTypeName.Of<TWave>(), retention);
     }
 
     /// <summary>
@@ -102,7 +103,7 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
     /// <see cref="DefaultRetention"/> that would otherwise purge it.
     /// </summary>
     public RippleSetupOptions RetentionForever<TWave>() where TWave : notnull
-        => Retention(typeof(TWave).Name, retention: null);
+        => Retention(RippleTypeName.Of<TWave>(), retention: null);
 
     /// <summary>
     /// Sets the retention for a wave <c>type</c> by name (<c>null</c> ⇒ keep forever). The escape hatch for

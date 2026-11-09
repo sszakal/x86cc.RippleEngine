@@ -16,7 +16,7 @@ internal sealed class CollectionWaveGenerator(IEngineStore store) : ICollectionW
 
     public ICollectionWaveBuilder Create<TWave>(string name, TWave wavePayload)
         where TWave : notnull
-        => new CollectionWaveBuilder(store, name, typeof(TWave).Name,
+        => new CollectionWaveBuilder(store, name, RippleTypeName.Of<TWave>(),
             JsonSerializer.SerializeToDocument(wavePayload, typeof(TWave), RippleSeedSerializer.Options));
 
     public ICollectionWaveBuilder Continue(IRippleContext context)

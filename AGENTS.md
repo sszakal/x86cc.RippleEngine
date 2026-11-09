@@ -149,8 +149,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
    lagging host can't jump the global queue.
 3. **Claim** (`PollAsync`): one statement that (a) upserts the heartbeat, (b) claims the globally lowest
    `schedule_order` pending, retry-eligible ripples across ALL waves with `FOR UPDATE SKIP LOCKED`, bumping
-   attempt. No per-type selection, no quota, no counter writes — the fair-share is already baked into
-   `schedule_order`. Polling IS the liveness proof. Global concurrency is just `MaxConcurrency × instances`.
+   attempt — restricted to the `type_key`s this instance has a handler for (so a worker never claims, and
+   burns attempts on, a type only a peer can run; unhandled ripples stay Pending). No quota, no counter
+   writes — the fair-share is already baked into `schedule_order`. Polling IS the liveness proof. Global
+   concurrency is just `MaxConcurrency × instances`.
 4. **Configure**: the composite **`type_key = "{waveType}|{rippleType}"`** is both the config key and the
    handler key. `type_schedule(batch_size, gap_seconds, max_attempts)` is seeded at
    `AddHandler(batchSize, gapSeconds, maxAttempts)` registration; a job's steady-state throughput share ≈
@@ -224,6 +226,11 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
   paths are subtle — keep it that way.
 - Framework-controlled values in generated SQL (guids, type names, `'Pending'`) are inlined; user-driven
   values stay bound parameters.
+- A payload type's persisted name (its `payload_type`, and each half of the `type_key`) comes **only** from
+  `Core.RippleTypeName.Of<T>()` — `[RippleType("…")]` if present, else the CLR name. Never stamp
+  `typeof(T).Name` directly: fan-out and the worker registry must resolve identically. Pin a name with the
+  attribute before renaming a payload class, or ripples already in the DB lose their handler; the registry
+  throws if two different CLR types resolve to one `type_key`.
 - Handlers must be **idempotent** (a ripple can run more than once via retry or recovery).
 - Marten handlers open their OWN session from `IDocumentStore` (`store.LightweightSession()`), not an
   injected scoped `IDocumentSession` — the latter doesn't isolate cleanly across the engine's per-ripple

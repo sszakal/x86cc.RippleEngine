@@ -154,12 +154,13 @@ controls *share*, not an absolute ceiling.)
 
 ## 4. The claim — one round trip, lowest `schedule_order` first
 
-`EngineStore.PollAsync(limit, instanceId, executing)` is a **single statement** (one implicit transaction):
+`EngineStore.PollAsync(limit, instanceId, executing, typeKeys)` is a **single statement** (one implicit transaction):
 
 ```
 with
   beat     -- (a) upsert this instance's heartbeat (runs even at limit 0 → polling IS liveness)
-  claimed  -- (b) the globally lowest-schedule_order pending, retry-eligible ripples across ALL waves,
+  claimed  -- (b) the globally lowest-schedule_order pending, retry-eligible ripples across ALL waves
+           --     whose type_key this instance has a handler for (typeKeys; null = any),
            --     ORDER BY schedule_order, FOR UPDATE SKIP LOCKED, limit @limit;
            --     set Running, stamp claimed_by, attempt++
 select …claimed ripples joined to their wave's shared payload…
@@ -168,8 +169,12 @@ select …claimed ripples joined to their wave's shared payload…
 Why it's shaped this way:
 
 - **No runtime scheduling.** The fair-share is already in `schedule_order`, so the claim is just an index scan of
-  `ix_ripple_schedule_order` — no type selection, no quota, no counters. A poll's batch is heterogeneous (whatever
-  the precomputed order interleaves).
+  `ix_ripple_schedule_order` — no quota, no counters. A poll's batch is heterogeneous (whatever the precomputed
+  order interleaves).
+- **Handler affinity.** The one type filter is "types I can run": the dispatcher passes its registry's keys, so a
+  worker missing a handler (rolling deploy, type-dedicated pools) leaves that type Pending for a peer instead of
+  claiming it and failing it "no handler registered" until it's terminal. In a homogeneous cluster every row
+  passes; a type that NO live instance handles is scanned past at the index's left edge until one appears.
 - **`SKIP LOCKED`** means N workers polling the same queue take **disjoint** slices without blocking — cluster
   throughput scales with instance count. All workers hammer the same left edge of the index; `SKIP LOCKED`
   keeps them disjoint.

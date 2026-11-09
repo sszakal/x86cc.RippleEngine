@@ -22,6 +22,7 @@ namespace x86cc.RippleEngine.Engine;
 /// </summary>
 internal sealed class Dispatcher(
     ExecutionPipeline pipeline,
+    RippleHandlerRegistry registry,
     IEngineStore engineStore,
     RippleMetrics metrics,
     IOptions<RippleEngineOptions> options,
@@ -34,10 +35,21 @@ internal sealed class Dispatcher(
     // the execute block is topped up promptly rather than starving for a whole poll cadence.
     private static readonly TimeSpan PipelineFullRecheck = TimeSpan.FromMilliseconds(2);
 
+    // The type_keys this instance claims — exactly the ones it has a handler for, so it never claims a ripple
+    // only a peer can run (see IEngineStore.PollAsync). Snapshotted once: the registry is complete before the
+    // host starts and never changes after.
+    private string[] _handledTypes = [];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Ripple engine starting: instance {InstanceId}, {MaxConcurrency} max concurrency",
-            _options.InstanceId, _options.MaxConcurrency);
+        _handledTypes = registry.RegisteredTypes.ToArray();
+        logger.LogInformation(
+            "Ripple engine starting: instance {InstanceId}, {MaxConcurrency} max concurrency, handling {TypeKeys}",
+            _options.InstanceId, _options.MaxConcurrency, _handledTypes);
+        if (_handledTypes.Length == 0)
+        {
+            logger.LogWarning("Ripple engine has no handlers registered; this instance will heartbeat but claim nothing");
+        }
 
         pipeline.Start();
         var idleDelay = _options.MinPollDelay;
@@ -178,7 +190,7 @@ internal sealed class Dispatcher(
 
     private async Task<int> PollAndDispatchAsync(int limit, CancellationToken ct)
     {
-        var claimed = await engineStore.PollAsync(limit, _options.InstanceId, pipeline.ExecutingCount, ct);
+        var claimed = await engineStore.PollAsync(limit, _options.InstanceId, pipeline.ExecutingCount, _handledTypes, ct);
         // A poll claims in schedule_order order, so the batch can span several types — attribute per type_key.
         foreach (var group in claimed.GroupBy(c => c.TypeKey))
         {

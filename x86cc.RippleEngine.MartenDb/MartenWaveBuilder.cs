@@ -28,7 +28,7 @@ internal sealed class MartenWaveBuilder(
         // Marten translates the projection to `select jsonb_build_object(...) as data from <src> as d where ...`.
         var inner = session.Query<TSource>().Where(predicate).Select(toMessage).ToCommand(FetchType.FetchMany);
         // The inner already yields one `data` payload per impacted row; use it directly.
-        AddSpec(typeof(TMessage).Name, TrimInner(inner.CommandText), inner);
+        AddSpec(RippleTypeName.Of<TMessage>(), TrimInner(inner.CommandText), inner);
         return this;
     }
 
@@ -57,7 +57,7 @@ internal sealed class MartenWaveBuilder(
             ) as _b
             group by (rn - 1) / {batchSize}
             """;
-        AddSpec(typeof(TBatch).Name, dataSql, inner);
+        AddSpec(RippleTypeName.Of<TBatch>(), dataSql, inner);
         return this;
     }
 }

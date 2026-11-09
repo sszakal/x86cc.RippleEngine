@@ -74,7 +74,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
 
         // The user's SQL yields one row per ripple with a single jsonb column (the payload); we just normalise
         // its column name to `data`. No bound parameters — the SQL is self-contained.
-        AddSpec(typeof(TBatch).Name, $"select _r.data as data from ({TrimInner(sql)}) as _r(data)", command: null);
+        AddSpec(RippleTypeName.Of<TBatch>(), $"select _r.data as data from ({TrimInner(sql)}) as _r(data)", command: null);
         return this;
     }
 

@@ -10,7 +10,7 @@ public interface IRippleEngineBuilder
 
     /// <summary>
     /// Registers a developer handler for a <c>(wave, ripple)</c> pair, keyed by the composite
-    /// <c>type_key</c> (<c>"{typeof(TWave).Name}|{typeof(TRipple).Name}"</c>) stamped on the ripple at
+    /// <c>type_key</c> (<c>"{waveType}|{rippleType}"</c>, each part from <see cref="RippleTypeName"/>) stamped on the ripple at
     /// fan-out time. The type is left <b>unconfigured</b> — the fan-out uses the engine's default batch size
     /// and gap for it (see the overload to set them).
     /// </summary>

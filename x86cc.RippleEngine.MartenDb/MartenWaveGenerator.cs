@@ -22,7 +22,7 @@ internal sealed class MartenWaveGenerator(RippleDataSource dataSource) : IMarten
 
     public IWaveBuilder Create<TWave>(IQuerySession session, string name, TWave wavePayload)
         where TWave : notnull
-        => new MartenWaveBuilder(session, dataSource, name, waveType: typeof(TWave).Name,
+        => new MartenWaveBuilder(session, dataSource, name, waveType: RippleTypeName.Of<TWave>(),
             wavePayloadJson: JsonSerializer.Serialize(wavePayload, typeof(TWave), Json),
             Guid.NewGuid(), parentRippleId: null, continueExisting: false);
 
