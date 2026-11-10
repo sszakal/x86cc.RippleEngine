@@ -189,6 +189,71 @@ public sealed class ClockDrivenTests
         await settlement.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>A batch the database REJECTS is not retried as it stands — that fails the same way forever. It is
+    /// split until the offending outcome is alone; every other outcome lands with no backoff at all, and the
+    /// offender is settled without its report.</summary>
+    [Fact]
+    public async Task a_rejected_batch_is_split_and_only_the_offending_outcome_loses_its_report()
+    {
+        var options = Options.Create(new RippleEngineOptions { InstanceId = "clock-test" });
+        var inFlight = new InFlightTracker();
+        var settlement = BuildSettlement(options, inFlight);
+        using var drain = new CancellationTokenSource();
+        _store.Rejects = report => report == "poison";
+
+        var ids = Enumerable.Range(0, 7).Select(_ => Guid.NewGuid()).ToArray();
+        foreach (var id in ids)
+        {
+            inFlight.Track(id, attempt: 1);
+            settlement.Succeeded(new RippleCompletion(id, Guid.NewGuid(), 1, _time.GetUtcNow(),
+                id == ids[4] ? "poison" : "fine"));
+        }
+
+        settlement.Start(drain.Token); // started after queueing, so all seven are read as ONE batch
+        await WaitUntilAsync(() => _store.Completed.Count == 7);
+        await WaitUntilAsync(() => inFlight.Count == 0);
+
+        _time.TimersCreated.ShouldBe(0, "a rejection is isolated, never backed off on");
+        _store.Completed.Count(c => c.Report == "fine").ShouldBe(6);
+        var offender = _store.Completed.Single(c => c.RippleId == ids[4]);
+        var placeholder = offender.Report.ShouldNotBeNull();
+        placeholder.ShouldContain("report could not be stored");
+        placeholder.ShouldContain("Succeeded");
+
+        await settlement.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>If the row is refused even without its report, the report was never the cause — so it is not
+    /// dropped again or split further: it falls back to the ordinary retry, slot held.</summary>
+    [Fact]
+    public async Task an_outcome_rejected_even_without_its_report_is_retried_not_dropped()
+    {
+        var options = Options.Create(new RippleEngineOptions
+        {
+            InstanceId = "clock-test", SettlementRetryDelay = TimeSpan.FromMilliseconds(250)
+        });
+        var inFlight = new InFlightTracker();
+        var settlement = BuildSettlement(options, inFlight);
+        using var drain = new CancellationTokenSource();
+        settlement.Start(drain.Token);
+        _store.Rejects = _ => true;
+
+        var rippleId = Guid.NewGuid();
+        inFlight.Track(rippleId, attempt: 1);
+        settlement.Failed(new RippleFailure(rippleId, Guid.NewGuid(), 1, _time.GetUtcNow(), "any", true, null));
+
+        await WaitUntilAsync(() => _time.TimersCreated == 1); // rejected with and without its report: backing off
+        _store.Failed.ShouldBeEmpty();
+        inFlight.Count.ShouldBe(1, "an unwritten outcome keeps its slot");
+
+        _store.Rejects = null; // whatever was wrong is fixed; the next retry lands
+        _time.Advance(TimeSpan.FromMilliseconds(250));
+        (await SingleAsync(_store.Failed)).Report!.ShouldContain("report could not be stored");
+        await WaitUntilAsync(() => inFlight.Count == 0);
+
+        await settlement.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     /// <summary>Past the drain deadline a failing write stops retrying, and the attempt stays owned — recovery, not
     /// a dropped outcome, is what settles it.</summary>
     [Fact]
@@ -451,10 +516,15 @@ public sealed class ClockDrivenTests
         /// <summary>How many of the next writes throw (a transient DB outage) before they start landing.</summary>
         public int FailNextWrites { get; set; }
 
+        /// <summary>When set, a write whose batch holds a report this matches is refused the way the database
+        /// refuses bad data: deterministically, with a non-transient SQLSTATE error.</summary>
+        public Func<string?, bool>? Rejects { get; set; }
+
         public Task CompleteRipplesAsync(IReadOnlyList<RippleCompletion> batch, string instanceId,
             CancellationToken ct = default)
         {
             ThrowIfFailing();
+            ThrowIfRejected(batch.Select(c => c.Report));
             foreach (var c in batch) Completed.Enqueue(c);
             return Task.CompletedTask;
         }
@@ -463,8 +533,23 @@ public sealed class ClockDrivenTests
             CancellationToken ct = default)
         {
             ThrowIfFailing();
+            ThrowIfRejected(batch.Select(f => f.Report));
             foreach (var f in batch) Failed.Enqueue(f);
             return Task.CompletedTask;
+        }
+
+        private void ThrowIfRejected(IEnumerable<string?> reports)
+        {
+            if (Rejects is { } rejects && reports.Any(rejects))
+            {
+                throw new RejectedException();
+            }
+        }
+
+        private sealed class RejectedException() : System.Data.Common.DbException("invalid input")
+        {
+            public override string SqlState => "22P05";
+            public override bool IsTransient => false;
         }
 
         private void ThrowIfFailing()

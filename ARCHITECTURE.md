@@ -238,6 +238,14 @@ Dispatcher (1 per instance)                 ExecutionPipeline
 2. **Splash rows** — one `unnest(...)` insert for the whole batch, only for ripples that actually transitioned
    (never a statement per ripple).
 
+**A write the database rejects is isolated, not retried as-is.** `SettlementWriter` retries an outage (connection
+lost, timeout, a transient SQLSTATE) as a whole batch with backoff. A *rejection* — a non-transient error the
+database itself reported, i.e. something in the batch's data — would fail identically forever and, with one flush
+loop per channel, stop a live, heartbeating instance from settling anything (recovery only reclaims dead ones). So
+a rejected batch is split until the offending outcome is alone, and that one is settled with a placeholder report
+that keeps its outcome and names the reason. The known source — a NUL in an exception message or handler output,
+which `jsonb` refuses — is also stripped where reports are serialized (`SplashReportBuilder`).
+
 That's it — **no counters, no completion check**. The wave's numbers and its completion are the stats refresh's
 job (§8), decided from the actual row states rather than from deltas. This makes settlement a small, contention-
 free write and removes the post-commit race the old sharded-counter model had to guard against.

@@ -1,13 +1,16 @@
+using System.Data.Common;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Storage;
 
 namespace x86cc.RippleEngine.Engine;
 
 /// <summary>
 /// The settlement stage: buffers each attempt's outcome on a succeeded/failed channel and writes them in batches,
-/// one DB round trip per batch, retrying a failed write until it lands. Only once a batch is durably written does it
+/// one DB round trip per batch, retrying a failed write until it lands — and isolating an outcome the database
+/// rejects, so one unwritable row cannot hold up every outcome behind it. Only once a batch is durably written does it
 /// release the attempts' <see cref="InFlightTracker"/> slots — which is what turns a settlement backlog into claim
 /// back-pressure.
 /// </summary>
@@ -40,10 +43,14 @@ internal sealed class SettlementWriter(
         [
             Task.Run(() => FlushLoopAsync(_succeeded.Reader, _options.SucceededBatchSize,
                 (b, c) => splashStore.CompleteRipplesAsync(b, _options.InstanceId, c),
-                r => (r.RippleId, r.Attempt)), CancellationToken.None),
+                r => (r.RippleId, r.Attempt),
+                (r, why) => r with { Report = SplashReportBuilder.Unstorable(SplashOutcome.Succeeded, why) }),
+                CancellationToken.None),
             Task.Run(() => FlushLoopAsync(_failed.Reader, _options.FailedBatchSize,
                 (b, c) => splashStore.FailRipplesAsync(b, _options.InstanceId, c),
-                r => (r.RippleId, r.Attempt)), CancellationToken.None)
+                r => (r.RippleId, r.Attempt),
+                (r, why) => r with { Report = SplashReportBuilder.Unstorable(SplashOutcome.Failed, why) }),
+                CancellationToken.None)
         ];
     }
 
@@ -64,7 +71,8 @@ internal sealed class SettlementWriter(
     }
 
     private async Task FlushLoopAsync<T>(ChannelReader<T> reader, int batchSize,
-        Func<IReadOnlyList<T>, CancellationToken, Task> write, Func<T, (Guid RippleId, int Attempt)> keyOf)
+        Func<IReadOnlyList<T>, CancellationToken, Task> write, Func<T, (Guid RippleId, int Attempt)> keyOf,
+        Func<T, string, T> withoutReport)
     {
         var batch = new List<T>(batchSize);
         // Read until the writer completes (CompleteAsync), independent of the stop token, so every buffered
@@ -77,16 +85,25 @@ internal sealed class SettlementWriter(
                 batch.Add(item);
             }
 
-            // Release the owned slots only once the outcome is durably written; a stalled settlement holds
-            // them, which is exactly the back-pressure that pauses claiming.
-            if (await WriteWithRetryAsync(batch, write))
-            {
-                inFlight.Release(batch.Select(keyOf));
-            }
+            await SettleAsync(batch, write, keyOf, withoutReport, reportDropped: false);
         }
     }
 
-    private async Task<bool> WriteWithRetryAsync<T>(IReadOnlyList<T> batch, Func<IReadOnlyList<T>, CancellationToken, Task> write)
+    /// <summary>
+    /// Writes a batch, retrying until it lands, and releases the attempts' owned slots once it has — only then, so
+    /// a stalled settlement holds them, which is exactly the back-pressure that pauses claiming.
+    /// </summary>
+    /// <remarks>
+    /// Two kinds of failure, handled differently. An outage (connection lost, timeout, anything the database did
+    /// not itself report) is retried as a whole with backoff: the batch is fine and will land when the database is
+    /// back. A <b>rejection</b> (<see cref="IsRejection"/>) is the database refusing the batch's contents, and
+    /// retrying the same contents fails the same way forever — which, with one flush loop per channel, stops this
+    /// instance settling anything while it keeps heartbeating, so recovery never steps in. So a rejected batch is
+    /// split until the offending outcome is alone, and that one is written without its report
+    /// (<paramref name="withoutReport"/>): the ripple still settles as what it was, and only the detail is lost.
+    /// </remarks>
+    private async Task SettleAsync<T>(IReadOnlyList<T> batch, Func<IReadOnlyList<T>, CancellationToken, Task> write,
+        Func<T, (Guid RippleId, int Attempt)> keyOf, Func<T, string, T> withoutReport, bool reportDropped)
     {
         var delay = _options.SettlementRetryDelay;
         while (true)
@@ -94,7 +111,31 @@ internal sealed class SettlementWriter(
             try
             {
                 await write(batch, CancellationToken.None);
-                return true;
+                inFlight.Release(batch.Select(keyOf));
+                return;
+            }
+            catch (Exception e) when (!reportDropped && IsRejection(e))
+            {
+                if (batch.Count > 1)
+                {
+                    // Each write is one transaction, so the rejected batch left nothing behind: both halves
+                    // start clean, and the half without the offender lands on its first try.
+                    logger.LogWarning(e, "Ripple settlement of {Count} row(s) was rejected; splitting to isolate the cause",
+                        batch.Count);
+                    var half = batch.Count / 2;
+                    await SettleAsync(batch.Take(half).ToList(), write, keyOf, withoutReport, reportDropped);
+                    await SettleAsync(batch.Skip(half).ToList(), write, keyOf, withoutReport, reportDropped);
+                    return;
+                }
+
+                var (rippleId, attempt) = keyOf(batch[0]);
+                logger.LogError(e,
+                    "The outcome of ripple {RippleId} attempt {Attempt} was rejected by the database; settling it without its report",
+                    rippleId, attempt);
+                // If the row is refused even without its report, the report was not the cause: reportDropped
+                // sends that failure to the backoff below rather than back here.
+                await SettleAsync([withoutReport(batch[0], e.Message)], write, keyOf, withoutReport, reportDropped: true);
+                return;
             }
             catch (Exception e)
             {
@@ -118,7 +159,7 @@ internal sealed class SettlementWriter(
                     // (handlers are idempotent).
                     logger.LogWarning(
                         "Shutdown with {Count} unsettled outcome(s); recovery will re-run them", batch.Count);
-                    return false;
+                    return;
                 }
 
                 delay = TimeSpan.FromMilliseconds(
@@ -126,4 +167,12 @@ internal sealed class SettlementWriter(
             }
         }
     }
+
+    /// <summary>
+    /// True when the database itself refused the write and would refuse it again: an error it reported (it has a
+    /// SQLSTATE) that the provider does not class as transient. Connection loss, timeouts and the transient
+    /// SQLSTATEs (deadlock, serialization failure, server shutting down, out of resources) are all excluded, so an
+    /// outage is never mistaken for bad data.
+    /// </summary>
+    private static bool IsRejection(Exception e) => e is DbException { IsTransient: false, SqlState: not null };
 }

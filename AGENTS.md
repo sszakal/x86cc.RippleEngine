@@ -170,7 +170,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
 5. **Execute** (`ExecutionPipeline`): claimed ripples flow into a bounded `ActionBlock` (MDOP =
    `MaxConcurrency`, with a `PrefetchFactor` input buffer). The handler runs in a per-ripple DI scope; throw =
    failed (retry with backoff via `IRetryPolicy`, then terminal), return = succeeded. Outcomes batch-write via
-   `SettlementWriter`'s channels, and an attempt keeps its `InFlightTracker` slot until its write lands.
+   `SettlementWriter`'s channels, and an attempt keeps its `InFlightTracker` slot until its write lands. A
+   write the database *rejects* (non-transient SQLSTATE — bad data, not an outage) is never retried as-is: the
+   batch is split to isolate the offending outcome, which settles with a placeholder report.
 6. **Settle** (`SplashStore`): records a per-attempt `splash` and flips the ripple's terminal state — fenced on
    `claimed_by` + `state='Running'` + `attempt` (the attempt matters: a stalled instance is reclaimed, comes
    back under the same `InstanceId`, and can re-claim the same ripple, so owner+state alone would let its stale
