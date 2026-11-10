@@ -80,6 +80,8 @@ public static class RippleEngineExtensions
             $"{nameof(RippleEngineOptions.PauseReconcileMaxRowsPerPass)} must be > 0");
         optionsBuilder.Validate(o => o.ExecutionTimeout > TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.ExecutionTimeout)} must be positive");
+        optionsBuilder.Validate(o => o.HandlerCancellationGrace >= TimeSpan.Zero,
+            $"{nameof(RippleEngineOptions.HandlerCancellationGrace)} must not be negative");
         optionsBuilder.Validate(o => o.DispatchErrorDelay > TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.DispatchErrorDelay)} must be positive");
         optionsBuilder.Validate(o => o.ShutdownDrainGrace > TimeSpan.Zero,

@@ -63,6 +63,16 @@ public class RippleEngineOptions
     public TimeSpan ExecutionTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// How long a handler gets to return after its <c>CancellationToken</c> is cancelled — by
+    /// <see cref="ExecutionTimeout"/> or the end of <see cref="ShutdownDrainGrace"/> — before the engine stops
+    /// waiting for it. Cancellation is only a request; a handler that ignores it would otherwise hold its slot,
+    /// and its ripple <c>Running</c>, for as long as it hangs. Past this grace the attempt is recorded as failed
+    /// (and retried like any failure) and the slot is freed; the handler itself cannot be killed and may still be
+    /// running. Zero abandons a handler the moment it is cancelled.
+    /// </summary>
+    public TimeSpan HandlerCancellationGrace { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// How long shutdown waits for in-flight ripples to finish on their own before cancelling them. Handlers are
     /// NOT tied to the host's stopping token (see <c>ExecutionPipeline._drainCts</c>), so within this window a
     /// restart costs nothing: work completes and settles normally instead of burning a retry attempt — or, at
@@ -172,6 +182,7 @@ public class RippleEngineOptions
         target.SettlementRetryDelay = SettlementRetryDelay;
         target.MaxSettlementRetryDelay = MaxSettlementRetryDelay;
         target.ExecutionTimeout = ExecutionTimeout;
+        target.HandlerCancellationGrace = HandlerCancellationGrace;
         target.ShutdownDrainGrace = ShutdownDrainGrace;
         target.RetryBackoff = RetryBackoff;
         target.MaxRetryBackoff = MaxRetryBackoff;

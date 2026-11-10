@@ -218,6 +218,14 @@ Dispatcher (1 per instance)                 ExecutionPipeline
   (executed *and* written), not merely executed. So a stalled settlement keeps the in-flight count high,
   collapses claim capacity to zero, and pauses the dispatcher — which also bounds the in-memory settlement
   buffers to `depth`.
+- **A handler that won't stop is abandoned, not waited for.** `ExecutionTimeout` (and the end of the shutdown
+  drain) only *cancel* the handler's token. One that ignores it — a blocking call, a deadlock, an await that never
+  completes — would hold its block slot and keep its ripple `Running` under a live, heartbeating instance, which
+  no recovery path touches, so its wave could never complete. `HandlerCancellationGrace` (default 5s) after the
+  cancel, the pipeline stops waiting: the attempt is recorded Failed (retried like any failure), the slot is
+  freed, and `ripple.abandoned` counts it. The handler cannot be killed and may still be running — tolerated for
+  the same reason a recovery re-run is (idempotent handlers) — and its DI scope is disposed only when it returns.
+  Handlers run via `Task.Run` so that one blocking synchronously is covered too.
 - **Outcome handling.** A handler returns a `SplashReport` built by exception — `report.Success(id)` /
   `report.Failed(id, msg)`, aggregating targets by `(outcome, message)`; unreported targets are inferred
   succeeded. The attempt fails if it throws **or** reports any Failed target — then it retries with exponential

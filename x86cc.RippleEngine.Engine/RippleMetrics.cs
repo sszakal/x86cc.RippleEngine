@@ -18,6 +18,7 @@ public sealed class RippleMetrics : IDisposable
     private readonly Counter<long> _claimed;
     private readonly Counter<long> _succeeded;
     private readonly Counter<long> _failed;
+    private readonly Counter<long> _abandoned;
     private readonly Histogram<double> _duration;
 
     private Func<int>? _executingProvider;
@@ -28,6 +29,8 @@ public sealed class RippleMetrics : IDisposable
         _claimed = _meter.CreateCounter<long>("ripple.claimed", "{ripple}", "Ripples claimed for execution.");
         _succeeded = _meter.CreateCounter<long>("ripple.succeeded", "{ripple}", "Ripples that executed successfully.");
         _failed = _meter.CreateCounter<long>("ripple.failed", "{ripple}", "Ripple executions that threw (an attempt failed).");
+        _abandoned = _meter.CreateCounter<long>("ripple.abandoned", "{ripple}",
+            "Handlers that ignored cancellation and were abandoned (the attempt failed; the handler may still be running).");
         _duration = _meter.CreateHistogram<double>("ripple.duration", "ms", "Wall-clock duration of a single ripple execution.");
         _meter.CreateObservableGauge("ripple.executing", ObserveExecuting, "{ripple}",
             "Ripples currently owned (executing or awaiting settlement) on this instance.");
@@ -61,6 +64,8 @@ public sealed class RippleMetrics : IDisposable
         _failed.Add(1, tag);
         _duration.Record(durationMs, tag);
     }
+
+    public void Abandoned(string typeKey) => _abandoned.Add(1, Tag(typeKey));
 
     public void Dispose() => _meter.Dispose();
 

@@ -97,12 +97,15 @@ public static class RippleHostingExtensions
     /// </summary>
     private static void ConfigureShutdownBudget(IServiceCollection services, RippleSetupOptions options)
     {
-        var shutdownTimeout = options.ShutdownTimeout ?? options.ShutdownDrainGrace + options.ShutdownTimeoutMargin;
-        if (shutdownTimeout <= options.ShutdownDrainGrace)
+        // The drain can outlast ShutdownDrainGrace by HandlerCancellationGrace: when the grace expires handlers are
+        // cancelled, and one that ignores that is only abandoned (and its outcome settled) a cancellation grace later.
+        var drain = options.ShutdownDrainGrace + options.HandlerCancellationGrace;
+        var shutdownTimeout = options.ShutdownTimeout ?? drain + options.ShutdownTimeoutMargin;
+        if (shutdownTimeout <= drain)
         {
             throw new InvalidOperationException(
                 $"{nameof(RippleSetupOptions.ShutdownTimeout)} ({shutdownTimeout}) must exceed "
-                + $"{nameof(RippleEngineOptions.ShutdownDrainGrace)} ({options.ShutdownDrainGrace}): the host would "
+                + $"{nameof(RippleEngineOptions.ShutdownDrainGrace)} + {nameof(RippleEngineOptions.HandlerCancellationGrace)} ({drain}): the host would "
                 + "hard-kill the process while the engine is still draining, leaving in-flight ripples Running "
                 + "until recovery reclaims them.");
         }

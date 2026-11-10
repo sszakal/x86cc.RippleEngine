@@ -171,7 +171,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
    read at claim time, not stamped on the ripple.
 5. **Execute** (`ExecutionPipeline`): claimed ripples flow into a bounded `ActionBlock` (MDOP =
    `MaxConcurrency`, with a `PrefetchFactor` input buffer). The handler runs in a per-ripple DI scope; throw =
-   failed (retry with backoff via `IRetryPolicy`, then terminal), return = succeeded. Outcomes batch-write via
+   failed (retry with backoff via `IRetryPolicy`, then terminal), return = succeeded. A handler still running
+   `HandlerCancellationGrace` after its token was cancelled is abandoned: the attempt fails and the slot is
+   freed, though the handler itself may run on. Outcomes batch-write via
    `SettlementWriter`'s channels, and an attempt keeps its `InFlightTracker` slot until its write lands. A
    write the database *rejects* (non-transient SQLSTATE — bad data, not an outage) is never retried as-is: the
    batch is split to isolate the offending outcome, which settles with a placeholder report.

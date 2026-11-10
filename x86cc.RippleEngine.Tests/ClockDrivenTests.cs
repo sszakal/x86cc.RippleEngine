@@ -64,6 +64,63 @@ public sealed class ClockDrivenTests
         await StopAsync(pipeline);
     }
 
+    /// <summary>A handler that IGNORES its cancelled token — awaiting something that never completes, or blocking
+    /// its thread outright — is waited for only HandlerCancellationGrace longer. Then the attempt fails as
+    /// abandoned and its slot is free for the next ripple, instead of the ripple staying Running forever under a
+    /// live instance that no recovery path will ever touch.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task a_handler_that_ignores_cancellation_is_abandoned_after_the_grace_and_frees_its_slot(bool blocksItsThread)
+    {
+        var pipeline = BuildPipeline(o =>
+        {
+            o.ExecutionTimeout = TimeSpan.FromSeconds(30);
+            o.HandlerCancellationGrace = TimeSpan.FromSeconds(5);
+        });
+        using var release = new ManualResetEventSlim();
+        var never = new TaskCompletionSource<SplashReport?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _probe.Behaviour = (ctx, _) =>
+        {
+            _probe.Started.TrySetResult(ctx);
+            if (blocksItsThread)
+            {
+                release.Wait(); // never looks at ctx.CancellationToken
+                return Task.FromResult<SplashReport?>(null);
+            }
+
+            return never.Task;
+        };
+
+        pipeline.Post(Ripple(attempt: 1, maxAttempts: 3));
+        var context = await _probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var startedAt = _time.GetUtcNow();
+        var timers = _time.TimersCreated;
+
+        _time.Advance(TimeSpan.FromSeconds(30));
+        context.CancellationToken.IsCancellationRequested.ShouldBeTrue();
+        await WaitUntilAsync(() => _time.TimersCreated > timers); // the grace is armed
+
+        _time.Advance(TimeSpan.FromSeconds(5) - TimeSpan.FromTicks(1));
+        _store.Failed.ShouldBeEmpty("the handler gets its full grace to honour the cancellation");
+        _time.Advance(TimeSpan.FromTicks(1));
+
+        var failure = await SingleAsync(_store.Failed);
+        failure.EndedAt.ShouldBe(startedAt + TimeSpan.FromSeconds(35));
+        failure.Terminal.ShouldBeFalse("abandonment is an ordinary failed attempt: it retries");
+        failure.Report.ShouldNotBeNull().ShouldContain("abandoned");
+        await WaitUntilAsync(() => pipeline.ExecutingCount == 0);
+
+        // MaxConcurrency is 1 and the first handler is STILL hung: the next ripple runs only if its slot was freed.
+        _probe.Behaviour = (_, _) => Task.FromResult<SplashReport?>(null);
+        pipeline.Post(Ripple(attempt: 1, maxAttempts: 3));
+        await SingleAsync(_store.Completed);
+
+        release.Set();
+        never.SetResult(null);
+        await StopAsync(pipeline);
+    }
+
     /// <summary>The retry deadline is <c>endedAt + RetryBackoff · 2^(attempt-1)</c>, capped at MaxRetryBackoff, and
     /// the last allowed attempt is terminal with no retry.</summary>
     [Theory]

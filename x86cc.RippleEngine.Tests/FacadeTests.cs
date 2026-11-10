@@ -55,10 +55,15 @@ public sealed class FacadeTests
     [Fact]
     public void the_host_shutdown_timeout_is_derived_from_the_engine_drain()
     {
-        using var host = Build(o => o.ShutdownDrainGrace = TimeSpan.FromSeconds(20));
+        using var host = Build(o =>
+        {
+            o.ShutdownDrainGrace = TimeSpan.FromSeconds(20);
+            o.HandlerCancellationGrace = TimeSpan.FromSeconds(3);
+        });
 
+        // drain + the grace a cancelled handler gets before it is abandoned + the 10s default margin
         host.Services.GetRequiredService<IOptions<HostOptions>>().Value.ShutdownTimeout
-            .ShouldBe(TimeSpan.FromSeconds(30)); // drain + the 10s default margin
+            .ShouldBe(TimeSpan.FromSeconds(33));
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Storage;
 
 namespace x86cc.RippleEngine.Engine;
@@ -47,6 +48,9 @@ internal sealed class ExecutionPipeline(
     // StopAsync arms this with CancelAfter(ShutdownDrainGrace), so both stages get the drain and one deadline
     // bounds the whole shutdown.
     private readonly CancellationTokenSource _drainCts = new(Timeout.InfiniteTimeSpan, time);
+
+    // Handlers this instance gave up waiting for that are still running (see Abandon).
+    private int _abandonedRunning;
 
     /// <summary>Attempts owned right now — executing, queued, or awaiting settlement (see <see cref="InFlightTracker"/>).</summary>
     public int ExecutingCount => inFlight.Count;
@@ -166,6 +170,9 @@ internal sealed class ExecutionPipeline(
         string? report;
         bool failed;
         string[] targetIds = [];
+        IServiceScope? scope = null;
+        Task<SplashReport?>? run = null;
+        var abandoned = false;
         try
         {
             if (!registry.TryGet(ripple.TypeKey, out var prepare))
@@ -173,15 +180,19 @@ internal sealed class ExecutionPipeline(
                 throw new InvalidOperationException($"No handler registered for type key '{ripple.TypeKey}'.");
             }
 
-            using var scope = scopeFactory.CreateScope();
+            scope = scopeFactory.CreateScope();
             var invocation = prepare(scope.ServiceProvider, ripple.WavePayload, ripple.Payload, context);
             targetIds = invocation.TargetIds;
-            var returned = await invocation.Run();
+            // Task.Run, not a direct call: a handler that blocks SYNCHRONOUSLY (before its first await) would
+            // never hand back a task to stop waiting on, and would hold this block slot for as long as it blocks.
+            run = Task.Run(() => invocation.Run());
+            var returned = await ReturnedOrAbandonedAsync(run, timeoutCts.Token);
             (report, failed) = SplashReportBuilder.Resolve(targetIds, returned);
         }
         catch (Exception ex)
         {
             // Terminated outside the handler: every target gets the same Failed outcome + the exception message.
+            abandoned = ex is HandlerAbandonedException;
             report = SplashReportBuilder.Failed(targetIds, Flatten(ex));
             failed = true;
         }
@@ -191,6 +202,15 @@ internal sealed class ExecutionPipeline(
             // POCOs before Run(), so nothing downstream still reads the documents. The outcome written below
             // carries only the already-serialized report string.
             ripple.Dispose();
+
+            if (abandoned)
+            {
+                Abandon(run!, scope!, ripple);
+            }
+            else
+            {
+                scope?.Dispose();
+            }
         }
 
         // The attempt is over HERE — one sample, carried on the outcome and reused for the metrics histogram, so
@@ -219,6 +239,68 @@ internal sealed class ExecutionPipeline(
         // written (SettlementWriter releases it on a successful write). This is what turns a settlement
         // backlog into claim back-pressure.
     }
+
+    /// <summary>
+    /// The handler's result — or, if it is still running <see cref="RippleEngineOptions.HandlerCancellationGrace"/>
+    /// after its token was cancelled (execution timeout or shutdown drain), a <see cref="HandlerAbandonedException"/>.
+    /// </summary>
+    /// <remarks>
+    /// Cancellation is cooperative, so a handler that ignores its token (a blocking call with no token, a
+    /// deadlock, an await on something that never completes) cannot be stopped — only no longer waited for.
+    /// Waiting forever is the worse failure: the block slot and the in-flight slot are held for good, the ripple
+    /// stays <c>Running</c> under an instance that is alive and heartbeating, so neither recovery path ever
+    /// touches it, and its wave can never complete. Abandoning ends the ATTEMPT as failed (retried or terminal
+    /// like any other failure) and frees both slots. The handler itself may still be running and may still have
+    /// its effect — which a retry tolerates for the same reason a recovery re-run does: handlers are idempotent.
+    /// </remarks>
+    private async Task<SplashReport?> ReturnedOrAbandonedAsync(Task<SplashReport?> run, CancellationToken cancelled)
+    {
+        if (!run.IsCompleted)
+        {
+            var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var registration = cancelled.UnsafeRegister(
+                static s => ((TaskCompletionSource)s!).TrySetResult(), signal);
+
+            if (await Task.WhenAny(run, signal.Task) != run)
+            {
+                // Cancelled. A well-behaved handler unwinds almost at once; give it the grace to do so.
+                using var graceOver = new CancellationTokenSource();
+                var grace = Task.Delay(_options.HandlerCancellationGrace, time, graceOver.Token);
+                if (await Task.WhenAny(run, grace) != run)
+                {
+                    throw new HandlerAbandonedException(_options.HandlerCancellationGrace);
+                }
+
+                await graceOver.CancelAsync(); // release the grace timer
+            }
+        }
+
+        return await run;
+    }
+
+    /// <summary>Lets go of a handler that would not stop. Its DI scope must outlive it — disposing services out
+    /// from under code that is still running would turn a hang into arbitrary failures — so the scope is disposed
+    /// only when (if ever) the handler finally returns.</summary>
+    private void Abandon(Task<SplashReport?> run, IServiceScope scope, PreparedRipple ripple)
+    {
+        var running = Interlocked.Increment(ref _abandonedRunning);
+        metrics.Abandoned(ripple.TypeKey);
+        logger.LogError(
+            "Handler for ripple {RippleId} ({TypeKey}, attempt {Attempt}) ignored cancellation for {Grace} and was abandoned; "
+            + "{Running} abandoned handler(s) are still running in this process, each holding whatever it is blocked on",
+            ripple.RippleId, ripple.TypeKey, ripple.Attempt, _options.HandlerCancellationGrace, running);
+
+        run.ContinueWith(finished =>
+        {
+            _ = finished.Exception; // observed: its outcome was already recorded as abandoned
+            Interlocked.Decrement(ref _abandonedRunning);
+            try { scope.Dispose(); } catch { /* nothing left to report it against */ }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private sealed class HandlerAbandonedException(TimeSpan grace) : TimeoutException(
+        $"The handler was cancelled (execution timeout or shutdown) and had not returned {grace} later; "
+        + "the attempt was abandoned and the handler may still be running.");
 
     private static string Flatten(Exception error)
     {

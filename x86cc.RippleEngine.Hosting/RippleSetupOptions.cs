@@ -63,7 +63,8 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
 
     /// <summary>
     /// The host's shutdown budget (<c>HostOptions.ShutdownTimeout</c>). Leave it null and it is derived from
-    /// <see cref="RippleEngineOptions.ShutdownDrainGrace"/> — the drain plus a margin — because the framework
+    /// <see cref="RippleEngineOptions.ShutdownDrainGrace"/> — the drain, plus
+    /// <see cref="RippleEngineOptions.HandlerCancellationGrace"/>, plus a margin — because the framework
     /// default (5s) is shorter than the default drain and would hard-kill the process mid-drain, stranding
     /// in-flight ripples as <c>Running</c> until recovery times out. A value that does not leave room for the
     /// drain is rejected at startup rather than silently truncating it.
