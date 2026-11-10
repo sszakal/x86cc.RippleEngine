@@ -341,6 +341,103 @@ public sealed class ClockDrivenTests
         await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>The heartbeat rides on the poll, so a poll that hangs must not take the beat down with it: it is
+    /// abandoned at exactly <c>StoreCallDeadline</c> and the fallback beat goes out — long before HeartbeatTimeout,
+    /// where the provider's own 30s command timeout would have left the instance declared dead.</summary>
+    [Fact]
+    public async Task a_hung_poll_is_abandoned_at_its_deadline_and_the_fallback_beat_goes_out()
+    {
+        var options = Options.Create(new RippleEngineOptions
+        {
+            InstanceId = "clock-test", MaxConcurrency = 1,
+            HeartbeatInterval = TimeSpan.FromSeconds(3), HeartbeatTimeout = TimeSpan.FromSeconds(15)
+        });
+        var deadline = TimeSpan.FromSeconds(3); // (15 - 3) / 4
+        options.Value.StoreCallDeadline.ShouldBe(deadline);
+
+        var hung = ScriptedEngineStore.Create(_time, (method, token) => method == "PollAsync"
+            ? HangAsync(token)
+            : Task.CompletedTask);
+        using var dispatcher = BuildDispatcher(options, hung);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => hung.Calls("PollAsync") == 1);
+
+        _time.Advance(deadline - TimeSpan.FromTicks(1));
+        hung.Calls("BeatAsync").ShouldBe(0, "the poll is given its full deadline");
+        _time.Advance(TimeSpan.FromTicks(1));
+        await WaitUntilAsync(() => hung.Calls("BeatAsync") == 1);
+        hung.Calls("PollAsync").ShouldBe(1);
+
+        await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        static async Task<IReadOnlyList<ClaimedRipple>> HangAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            return [];
+        }
+    }
+
+    /// <summary>Shutdown stops the poll loop, but the instance still owns the work it is draining — so it keeps
+    /// beating, every HeartbeatInterval, until the drain ends. Silent, it would be declared dead mid-drain and its
+    /// still-running ripples requeued for a second execution.</summary>
+    [Fact]
+    public async Task the_heartbeat_continues_through_the_shutdown_drain()
+    {
+        var interval = TimeSpan.FromSeconds(3);
+        void Configure(RippleEngineOptions o)
+        {
+            o.HeartbeatInterval = interval;
+            o.ShutdownDrainGrace = TimeSpan.FromHours(1);
+            o.ExecutionTimeout = TimeSpan.FromHours(2);
+        }
+
+        var options = new RippleEngineOptions { InstanceId = "clock-test", MaxConcurrency = 1 };
+        Configure(options);
+
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _probe.Behaviour = async (ctx, _) =>
+        {
+            _probe.Started.TrySetResult(ctx);
+            await finish.Task;
+            return null;
+        };
+
+        var claimed = 0;
+        var store = ScriptedEngineStore.Create(_time, (method, _) => method switch
+        {
+            "PollAsync" => Task.FromResult<IReadOnlyList<ClaimedRipple>>(Interlocked.Increment(ref claimed) == 1
+                ? [new ClaimedRipple(Guid.NewGuid(), Guid.NewGuid(), 1, 3, TypeKey, nameof(ClockRipple),
+                    JsonDocument.Parse($$"""{"id":"{{Guid.NewGuid()}}"}"""), null, JsonDocument.Parse("{}"))]
+                : []),
+            "RemoveInstanceAsync" => Task.FromResult(true),
+            _ => Task.CompletedTask
+        });
+        using var dispatcher = BuildDispatcher(Options.Create(options), store, BuildPipeline(Configure, start: false));
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        var context = await _probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var stop = dispatcher.StopAsync(CancellationToken.None);
+        store.Calls("BeatAsync").ShouldBe(0, "while polling, the beat rides on the poll");
+
+        // Nudge the clock forward until two drain beats have gone out (nudging, not one jump: the drain arms its
+        // delay on another thread, and a jump that landed first would be missed).
+        var drainStarted = _time.GetUtcNow();
+        await WaitUntilAsync(() =>
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(100));
+            return store.Calls("BeatAsync") >= 2;
+        });
+        (_time.GetUtcNow() - drainStarted).ShouldBeGreaterThanOrEqualTo(2 * interval, "one beat per interval, not a burst");
+        context.CancellationToken.IsCancellationRequested.ShouldBeFalse();
+        stop.IsCompleted.ShouldBeFalse("the drain is still waiting on the handler");
+
+        finish.SetResult();
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+        (await SingleAsync(_store.Completed)).Attempt.ShouldBe(1);
+    }
+
     /// <summary>An empty queue backs the poll cadence off — doubling from MinPollDelay up to MaxPollDelay — so an
     /// idle cluster stops hammering the DB. Each step is checked to the tick.</summary>
     [Fact]
@@ -428,12 +525,13 @@ public sealed class ClockDrivenTests
     }
 
     /// <summary>A real dispatcher over a real (handler-less) pipeline, talking to a scripted store.</summary>
-    private Dispatcher BuildDispatcher(IOptions<RippleEngineOptions> options, ScriptedEngineStore store)
+    private Dispatcher BuildDispatcher(IOptions<RippleEngineOptions> options, ScriptedEngineStore store,
+        ExecutionPipeline? pipeline = null)
     {
         var registry = new RippleHandlerRegistry();
         var inFlight = new InFlightTracker();
         var scopes = new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-        var pipeline = new ExecutionPipeline(options, registry, scopes, inFlight, new ExponentialRetryPolicy(options),
+        pipeline ??= new ExecutionPipeline(options, registry, scopes, inFlight, new ExponentialRetryPolicy(options),
             BuildSettlement(options, inFlight), new RippleMetrics(), _time, NullLogger<ExecutionPipeline>.Instance);
         return new Dispatcher(pipeline, registry, store.AsEngineStore, new RippleMetrics(), options,
             new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
@@ -570,7 +668,7 @@ public sealed class ClockDrivenTests
     {
         private readonly ConcurrentDictionary<string, int> _calls = new();
         private CountingTimeProvider _time = default!;
-        private Func<string, object?> _respond = default!;
+        private Func<string, CancellationToken, object?> _respond = default!;
 
         internal IEngineStore AsEngineStore => (IEngineStore)(object)this;
 
@@ -579,6 +677,12 @@ public sealed class ClockDrivenTests
         public int TimersAtLastCall { get; private set; }
 
         internal static ScriptedEngineStore Create(CountingTimeProvider time, Func<string, object?> respond)
+            => Create(time, (method, _) => respond(method));
+
+        /// <summary>As above, but the responder also gets the call's cancellation token — to script a call that
+        /// hangs until the dispatcher gives up on it.</summary>
+        internal static ScriptedEngineStore Create(CountingTimeProvider time,
+            Func<string, CancellationToken, object?> respond)
         {
             var store = (ScriptedEngineStore)(object)Create<IEngineStore, ScriptedEngineStore>();
             store._time = time;
@@ -593,7 +697,7 @@ public sealed class ClockDrivenTests
             var name = targetMethod!.Name;
             TimersAtLastCall = _time.TimersCreated;
             _calls.AddOrUpdate(name, 1, (_, n) => n + 1);
-            return _respond(name);
+            return _respond(name, args?.OfType<CancellationToken>().LastOrDefault() ?? default);
         }
     }
 

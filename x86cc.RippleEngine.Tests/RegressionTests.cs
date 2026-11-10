@@ -36,6 +36,37 @@ public sealed class RegressionTests : RippleTestBase
     }
 
     /// <summary>
+    /// A poll stuck in the database must give up when its token is cancelled. The dispatcher bounds every poll by
+    /// <c>StoreCallDeadline</c> so a slow claim can't silence the heartbeat riding on it — which only works if the
+    /// store really abandons the statement. Here the poll blocks on its own heartbeat row (locked by another
+    /// transaction) and must return within the cancellation, not the provider's 30s command timeout; and because
+    /// the statement was cancelled, nothing was claimed.
+    /// </summary>
+    [Fact]
+    public async Task a_poll_blocked_in_the_database_is_abandoned_when_its_token_is_cancelled()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 2);
+        await Engine.BeatAsync("inst-1", 0);
+
+        await using var blocker = await Db.OpenConnectionAsync();
+        await using var tx = await blocker.BeginTransactionAsync();
+        await blocker.ExecuteAsync(
+            "select 1 from ripple.instance_heartbeat where instance_id = 'inst-1' for update", transaction: tx);
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        var started = DateTimeOffset.UtcNow;
+        await Should.ThrowAsync<OperationCanceledException>(
+            () => Engine.PollAsync(10, "inst-1", 0, ct: deadline.Token));
+        (DateTimeOffset.UtcNow - started).ShouldBeLessThan(TimeSpan.FromSeconds(10));
+
+        await tx.RollbackAsync();
+        (await ScalarAsync("select count(*) from ripple.ripple where state = 'Running'"))
+            .ShouldBe(0, "a cancelled poll claims nothing");
+    }
+
+    /// <summary>
     /// A report item with NO target ids must survive compaction. <c>compact_wave</c> exploded targetIds with a
     /// CROSS join lateral, which drops the whole row for an empty array — silently discarding every targetless
     /// item. Both recovery paths write 'targetIds': [] (Abandoned), and a framework-terminated failure before

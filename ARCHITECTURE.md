@@ -179,7 +179,13 @@ Why it's shaped this way:
   throughput scales with instance count. All workers hammer the same left edge of the index; `SKIP LOCKED`
   keeps them disjoint.
 - **The heartbeat rides on the poll.** No separate beat loop; a poll at `limit 0` still beats. The dispatcher
-  falls back to a direct beat only if a poll throws, so a live node is never declared dead.
+  falls back to a direct beat only if a poll throws, so a live node is never declared dead. Because the beat shares
+  the claim's round trip, every poll (and fallback beat) is bounded by a deadline derived from the heartbeat
+  settings — `(HeartbeatTimeout − HeartbeatInterval) / 4`, 3s at the defaults — rather than the provider's 30s
+  command timeout: a poll that overruns is abandoned as a failed cycle and the fallback beat goes out, so one
+  slow claim cannot get a live instance declared dead. (A poll abandoned after its claim committed leaves rows
+  `Running` with no handler — what self-stranded recovery releases.) The beat also outlives the poll loop: it
+  continues every `HeartbeatInterval` through the shutdown drain, while the instance still owns running work.
 - **The claim is slim** — it returns only what execution needs plus the wave's shared payload (joined in the
   same query), so the big per-ripple payloads travel once.
 - **Retry-eligibility** is `next_attempt_at is null or next_attempt_at <= now()`; a backing-off ripple keeps

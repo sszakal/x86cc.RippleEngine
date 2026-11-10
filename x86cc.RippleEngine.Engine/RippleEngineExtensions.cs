@@ -106,7 +106,8 @@ public static class RippleEngineExtensions
 
             // Seed each registered type's batch/gap before the dispatcher starts claiming.
             services.AddHostedService<ScheduleSeeder>();
-            // The dispatcher owns the heartbeat now (it rides on the poll), so there is no separate beat loop.
+            // The dispatcher owns the heartbeat (it rides on the poll, each round trip deadline-bounded, and
+            // carries on through the shutdown drain), so there is no separate beat loop.
             services.AddHostedService<Dispatcher>();
             services.AddHostedService<RecoveryLoop>();
             // The only writer of the wave's live numbers / decider of wave completion.

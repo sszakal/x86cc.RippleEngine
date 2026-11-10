@@ -88,6 +88,27 @@ public class RippleEngineOptions
     /// <summary>An instance silent longer than this is declared dead and its work recovered.</summary>
     public TimeSpan HeartbeatTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// The longest the dispatcher waits on one poll or heartbeat round trip before abandoning it. Derived, not
+    /// configured: it is the slack between <see cref="HeartbeatInterval"/> and <see cref="HeartbeatTimeout"/> cut
+    /// into quarters, so the worst case — a beat falls due, the poll carrying it hangs to its deadline, the
+    /// fallback beat hangs to its own, and the next one lands — still fits inside the timeout with a quarter to
+    /// spare for the provider to abort the call. 3s at the defaults.
+    /// </summary>
+    /// <remarks>
+    /// Floored at one second: with a timeout only barely above the interval the quotient approaches zero and every
+    /// poll would be abandoned before it could return, an engine that silently never claims. Below the floor the
+    /// guarantee above no longer holds, which is no worse than having no deadline at all.
+    /// </remarks>
+    internal TimeSpan StoreCallDeadline
+    {
+        get
+        {
+            var quarter = (HeartbeatTimeout - HeartbeatInterval) / 4;
+            return quarter > TimeSpan.FromSeconds(1) ? quarter : TimeSpan.FromSeconds(1);
+        }
+    }
+
     /// <summary>How often the recovery loop checks for dead instances.</summary>
     public TimeSpan RecoveryInterval { get; set; } = TimeSpan.FromSeconds(10);
 

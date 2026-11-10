@@ -159,7 +159,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
    `schedule_order` pending, retry-eligible ripples across ALL waves with `FOR UPDATE SKIP LOCKED`, bumping
    attempt — restricted to the `type_key`s this instance has a handler for (so a worker never claims, and
    burns attempts on, a type only a peer can run; unhandled ripples stay Pending). No quota, no counter
-   writes — the fair-share is already baked into `schedule_order`. Polling IS the liveness proof. Global
+   writes — the fair-share is already baked into `schedule_order`. Polling IS the liveness proof. Each
+   poll/beat is deadline-bounded (`RippleEngineOptions.StoreCallDeadline`, derived from the heartbeat settings)
+   so a slow claim can't silence the beat, and the dispatcher keeps beating through the shutdown drain. Global
    concurrency is just `MaxConcurrency × instances`.
 4. **Configure**: the composite **`type_key = "{waveType}|{rippleType}"`** is both the config key and the
    handler key. `type_schedule(batch_size, gap_seconds, max_attempts)` is seeded at

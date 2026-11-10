@@ -19,6 +19,12 @@ namespace x86cc.RippleEngine.Engine;
 /// we fall back to a direct beat so a healthy node is never declared dead. Adaptive backoff keeps polling
 /// tight while work flows and quiet when the queue is empty.
 /// </para>
+/// <para>
+/// Riding on the poll must never let a SLOW poll silence the beat, so each poll and beat is bounded by
+/// <see cref="RippleEngineOptions.StoreCallDeadline"/>: one that overruns is abandoned and the fallback beat goes
+/// out instead, well inside <see cref="RippleEngineOptions.HeartbeatTimeout"/>. And the beat outlives the loop —
+/// it continues through the shutdown drain, while this instance still owns running work.
+/// </para>
 /// </summary>
 internal sealed class Dispatcher(
     ExecutionPipeline pipeline,
@@ -131,7 +137,7 @@ internal sealed class Dispatcher(
                         await Task.Delay(idleDelay, time, stoppingToken);
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     // shutting down
                 }
@@ -143,7 +149,7 @@ internal sealed class Dispatcher(
                     // mistaken for dead and its in-flight work recovered out from under it.
                     try
                     {
-                        await engineStore.BeatAsync(_options.InstanceId, pipeline.ExecutingCount, stoppingToken);
+                        await BeatAsync(stoppingToken);
                         lastBeat = time.GetUtcNow();
                     }
                     catch (Exception beatError)
@@ -171,7 +177,7 @@ internal sealed class Dispatcher(
         finally
         {
             logger.LogInformation("Ripple engine stopping: draining in-flight ripples");
-            await pipeline.StopAsync();
+            await DrainWithHeartbeatAsync();
 
             // Deregister so peers don't wait out HeartbeatTimeout to reclaim nothing. RemoveInstanceAsync
             // refuses (and keeps the row) if we still own any Running ripple: the heartbeat is recovery's only
@@ -189,9 +195,76 @@ internal sealed class Dispatcher(
         }
     }
 
+    /// <summary>
+    /// Drains the pipeline while still heartbeating. The poll loop — and the beat that rides on it — has stopped,
+    /// but the drain can run for the whole <see cref="RippleEngineOptions.ShutdownDrainGrace"/> with handlers
+    /// still executing. Silent for that long, this instance would be declared dead part-way through: a peer would
+    /// requeue ripples whose handlers are about to finish, running them twice and spending an attempt on each.
+    /// </summary>
+    private async Task DrainWithHeartbeatAsync()
+    {
+        var drain = pipeline.StopAsync();
+        using var drained = new CancellationTokenSource();
+        while (!drain.IsCompleted)
+        {
+            await Task.WhenAny(drain, Task.Delay(_options.HeartbeatInterval, time, drained.Token));
+            if (drain.IsCompleted)
+            {
+                break;
+            }
+
+            try
+            {
+                await BeatAsync(CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                logger.LogWarning(e, "Ripple heartbeat during the shutdown drain failed");
+            }
+        }
+
+        await drained.CancelAsync(); // release the pending delay's timer
+        await drain;
+    }
+
+    private Task BeatAsync(CancellationToken ct)
+        => WithDeadlineAsync("heartbeat", async token =>
+        {
+            await engineStore.BeatAsync(_options.InstanceId, pipeline.ExecutingCount, token);
+            return true;
+        }, ct);
+
+    /// <summary>
+    /// Runs one store round trip under <see cref="RippleEngineOptions.StoreCallDeadline"/>. The heartbeat rides on
+    /// these calls, and a call with no deadline of its own waits out the provider's command timeout — 30 seconds
+    /// by default, twice the default <see cref="RippleEngineOptions.HeartbeatTimeout"/> — so one slow claim was
+    /// enough to get a live instance declared dead and its in-flight work run a second time. Overrunning surfaces
+    /// as a <see cref="TimeoutException"/>, i.e. an ordinary failed cycle: fallback beat, then retry.
+    /// </summary>
+    /// <remarks>
+    /// An abandoned poll may still have committed its claim server-side; those rows are <c>Running</c> under this
+    /// instance with no handler, exactly what <c>RecoverSelfStrandedAsync</c> exists to release.
+    /// </remarks>
+    private async Task<T> WithDeadlineAsync<T>(string what, Func<CancellationToken, Task<T>> call, CancellationToken ct)
+    {
+        // Two sources, as in ExecutionPipeline: a linked source's own timer ignores the injected TimeProvider.
+        using var deadline = new CancellationTokenSource(_options.StoreCallDeadline, time);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        try
+        {
+            return await call(linked.Token);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Ripple {what} did not complete within {_options.StoreCallDeadline}; abandoned so the heartbeat is not held up.");
+        }
+    }
+
     private async Task<int> PollAndDispatchAsync(int limit, CancellationToken ct)
     {
-        var claimed = await engineStore.PollAsync(limit, _options.InstanceId, pipeline.ExecutingCount, _handledTypes, ct);
+        var claimed = await WithDeadlineAsync("poll",
+            token => engineStore.PollAsync(limit, _options.InstanceId, pipeline.ExecutingCount, _handledTypes, token), ct);
         // A poll claims in schedule_order order, so the batch can span several types — attribute per type_key.
         foreach (var group in claimed.GroupBy(c => c.TypeKey))
         {
