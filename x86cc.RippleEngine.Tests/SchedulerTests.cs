@@ -203,5 +203,46 @@ public sealed class SchedulerTests : RippleTestBase
             new { b = b.Id })).ShouldBe(1);
     }
 
+    /// <summary>
+    /// One straggler must not drag the frontier back to the wall clock. The frontier used to be read only from
+    /// the LOWEST pending <c>schedule_order</c> — and a ripple waiting out a retry backoff keeps its old, low
+    /// position while it waits. A single such row sat below "now", the clamp fell back to <c>now()</c>, and a
+    /// new job landed far behind the work in flight: exactly the catch-up monopoly the frontier exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task a_backing_off_straggler_does_not_pull_a_new_job_back_to_wallclock()
+    {
+        await ResetAsync();
+        await SeedScheduleAsync(RecalcTypeKey, batchSize: 1, gapSeconds: 100);
+
+        // Job A: slots at base_A + 0,100,…,900. Its first five are claimed and in flight.
+        var a = await CreateWaveAsync(legislation: "A");
+        await SeedRipplesAsync(a.Id, 10);
+        var claimed = await Engine.PollAsync(5, "inst-1", 0);
+        claimed.Count.ShouldBe(5);
+
+        // The very first one fails and is requeued with an hour's backoff: Pending again, at its ORIGINAL
+        // position (base_A + 0) — the lowest pending schedule_order in the system, and not claimable.
+        await Splashes.FailRipplesAsync(
+            [new RippleFailure(claimed[0].Id, a.Id, claimed[0].Attempt, Ago(1), null, Terminal: false,
+                NextAttemptAt: DateTimeOffset.UtcNow.AddHours(1))], "inst-1");
+
+        // Job B arrives while A's other four are still running, up to base_A + 400.
+        var b = await CreateWaveAsync(legislation: "B");
+        await SeedRipplesAsync(b.Id, 3);
+
+        // B starts where the cluster is actually working — at the in-flight work — not back at the wall clock.
+        (await ScalarAsync(
+            """
+            select case when
+                (select min(schedule_order) from ripple.ripple where wave_id = @b)
+                >= (select max(schedule_order) from ripple.ripple where wave_id = @a and state = 'Running')
+            then 1 else 0 end
+            """, new { a = a.Id, b = b.Id })).ShouldBe(1);
+        (await ScalarAsync(
+            "select case when (select min(schedule_order) from ripple.ripple where wave_id = @b) > extract(epoch from now()) + 60 then 1 else 0 end",
+            new { b = b.Id })).ShouldBe(1);
+    }
+
     private static DateTimeOffset Ago(int seconds) => DateTimeOffset.UtcNow.AddSeconds(-seconds);
 }

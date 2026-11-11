@@ -148,9 +148,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
 2. **Schedule** (fan-out): `schedule_order` is a **precomputed ordering key** (NOT a deadline) — a `double
    precision` number (epoch-seconds based, treated as opaque), stamped once:
    `base + floor(k/batch_size) * gap_seconds`. The `base` is `coalesce(max(schedule_order of the wave's pending),
-   greatest(extract(epoch from now()), min(schedule_order over ALL pending)))` — i.e. continuation appends after the job's own tail,
-   while a new/drained job starts at the current **global frontier** (the claim index's left edge), clamped up
-   to `now()`. It is deliberately NOT bare `now()`: virtual time runs ahead of the wall clock (the engine
+   greatest(extract(epoch from now()), min(schedule_order over ALL pending), max(schedule_order over ALL running)))` — i.e. continuation appends after the job's own tail,
+   while a new/drained job starts at the current **global frontier** (the claim index's left edge, or the highest
+   key in flight if that is further on — so a backing-off or unclaimable straggler at the left edge can't pin
+   it), clamped up to `now()`. It is deliberately NOT bare `now()`: virtual time runs ahead of the wall clock (the engine
    drains far faster than 1 slot/gap), so a late job based at `now()` would sit behind the frontier and
    monopolise the cluster to "catch up" (classic WFQ). A later job's batches then interleave with an in-flight
    job's remaining batches from the frontier. Nothing is ever rescheduled; `base`/`now()` are DB-clock so a

@@ -151,7 +151,8 @@ by `RippleTypeKey.Compose`) carries the config and resolves the handler:
 ```
 schedule_order = base + floor(k / batch_size) * gap_seconds            -- plain float arithmetic (seconds)
 base           = coalesce( max(schedule_order of the wave's pending ripples),           -- continuation
-                           greatest( epoch(now()), min(schedule_order over ALL pending) ) ) -- new job
+                           greatest( epoch(now()), min(schedule_order over ALL pending),
+                                     max(schedule_order over ALL running) ) )              -- new job
 ```
 
 (`schedule_order` is `double precision`; `epoch(now())` is `extract(epoch from now())` — the wall clock as
@@ -168,6 +169,15 @@ seconds, the monotonic anchor. No interval/timestamp math, just numbers.)
   `now()` would land far *behind* that frontier and the claim would drain its whole backlog exclusively —
   monopolising the cluster to "catch up" — before the two interleave. Basing at the frontier makes it
   interleave **immediately** (the classic weighted-fair-queueing virtual-start rule).
+- **The frontier also reads the work in flight.** The lowest pending key is only the frontier while the queue's
+  left edge is claimable. A ripple waiting out a retry backoff keeps its original (low) position, as do rows of a
+  type no live instance handles and a paused type's not-yet-parked rows — and one such straggler below `now()`
+  would pin the minimum, drop the clamp back to `now()`, and bring the monopoly straight back. So the frontier is
+  the greater of the lowest pending key and the **highest key currently `Running`**: claims go lowest-first, so
+  the highest key in flight marks where the cluster is really working. The Running set is small and has its own
+  partial index, and this is evaluated once per fan-out, never on the claim. Two limits: it only helps while
+  something is running, and with type-dedicated workers it can overshoot, starting a new job slightly late —
+  the safe direction.
 - **Interleaving.** From the frontier onward, the two jobs' batches alternate — the global order interleaves
   `A₁ B₁ A₂ B₂ …` instead of draining A fully first — far better than strict FIFO (behind *every* earlier task).
 - **Fairness knob.** A job's steady-state share of the schedule ≈ `batch_size / gap_seconds`. Smaller batches

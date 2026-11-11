@@ -56,7 +56,8 @@ internal static class ScheduleOrderSql
 
     /// <summary>
     /// The current global frontier as a base slot: the leftmost pending <c>schedule_order</c> (the left edge of
-    /// <c>ix_ripple_schedule_order</c>) clamped up to <c>now()</c>. This is the second arm of <see cref="BaseExpr"/>
+    /// <c>ix_ripple_schedule_order</c>) or the highest one in flight, whichever is further on, clamped up to
+    /// <c>now()</c>. This is the second arm of <see cref="BaseExpr"/>
     /// — where a new/re-activated job starts — extracted so the resume rebase (which re-stamps a resumed type's
     /// parked ripples onto the current frontier so they interleave fairly rather than monopolise the cluster to
     /// "catch up") shares the exact same clamp. <c>greatest()</c> ignores nulls, so a fully idle system falls back
@@ -64,10 +65,32 @@ internal static class ScheduleOrderSql
     /// and — evaluated inside the resume <c>UPDATE</c>'s pre-update snapshot — the rows being flipped back are still
     /// <c>'Paused'</c> here, so they are correctly excluded from the frontier they are about to land on.
     /// </summary>
+    /// <remarks>
+    /// The third term — the HIGHEST <c>schedule_order</c> currently <c>Running</c> — is what keeps one straggler
+    /// from undoing all of the above. The lowest pending key is only the frontier while the queue's left edge is
+    /// claimable, and several things park an old, low key there that is not: a ripple waiting out a retry backoff
+    /// (it deliberately keeps its original position), a type no live instance handles, a paused type's rows the
+    /// reconcile hasn't parked yet. One such row sits below <c>now()</c>, the minimum is pinned to it,
+    /// <c>greatest</c> falls back to <c>now()</c> — and a new job lands far behind the work in flight and
+    /// monopolises the cluster catching up, the exact failure the clamp exists to prevent. Claims are taken
+    /// lowest-first, so the highest key in flight marks where the cluster is really working, whatever is stuck
+    /// behind it.
+    /// <list type="bullet">
+    /// <item>Cheap: the Running set is bounded by <c>MaxConcurrency × PrefetchFactor × instances</c> and has its
+    /// own partial index (<c>ix_ripple_running</c>); this is evaluated once per fan-out statement, never on the
+    /// claim.</item>
+    /// <item>It only helps while something is running. A straggler in an otherwise momentarily idle system
+    /// still falls back to <c>now()</c> — where, with nothing in flight, there is also nothing to fall behind.</item>
+    /// <item>It can overshoot when instances handle different types: a worker dedicated to a type whose rows sit
+    /// far ahead makes the frontier look further on than it is for everyone else, and a new job starts a little
+    /// late rather than early. Late is the safe direction — it delays the newcomer, it never starves the rest.</item>
+    /// </list>
+    /// </remarks>
     public static string FrontierExpr =>
         $"""
          greatest(extract(epoch from now())::double precision,
-                  (select min(schedule_order) from {S}.ripple where state = 'Pending'))
+                  (select min(schedule_order) from {S}.ripple where state = 'Pending'),
+                  (select max(schedule_order) from {S}.ripple where state = 'Running'))
          """;
 
     /// <summary>
