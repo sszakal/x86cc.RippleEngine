@@ -67,6 +67,35 @@ public sealed class RegressionTests : RippleTestBase
     }
 
     /// <summary>
+    /// A released attempt (shutdown cancelled its handler) goes straight back to the queue with the attempt
+    /// handed back: the ripple is claimable at once and its next claim is the SAME attempt number, so a restart
+    /// costs it none of its retries. The interrupted run is still recorded — as Abandoned, not Failed.
+    /// </summary>
+    [Fact]
+    public async Task a_released_attempt_is_requeued_without_spending_the_attempt()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 1);
+        var claimed = (await Engine.PollAsync(10, "inst-1", 0)).Single();
+        claimed.Attempt.ShouldBe(1);
+
+        await Splashes.FailRipplesAsync(
+            [new RippleFailure(claimed.Id, wave.Id, claimed.Attempt, DateTimeOffset.UtcNow,
+                """[{"outcome":"Abandoned","output":"released","targetIds":[]}]""",
+                Terminal: true, NextAttemptAt: null, Released: true)], // Terminal is ignored for a release
+            "inst-1");
+
+        (await ScalarAsync("select count(*) from ripple.ripple where state = 'Pending' and attempt = 0 and next_attempt_at is null"))
+            .ShouldBe(1);
+        (await ScalarAsync("select count(*) from ripple.splash where outcome = 'Abandoned' and attempt = 1")).ShouldBe(1);
+
+        var again = (await Engine.PollAsync(10, "inst-2", 0)).Single();
+        again.Id.ShouldBe(claimed.Id);
+        again.Attempt.ShouldBe(1, "the released attempt was not counted");
+    }
+
+    /// <summary>
     /// A report item with NO target ids must survive compaction. <c>compact_wave</c> exploded targetIds with a
     /// CROSS join lateral, which drops the whole row for an empty array — silently discarding every targetless
     /// item. Both recovery paths write 'targetIds': [] (Abandoned), and a framework-terminated failure before

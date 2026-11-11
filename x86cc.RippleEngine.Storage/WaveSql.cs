@@ -37,7 +37,7 @@ internal static class WaveSql
                {SucceededExpr} as succeeded,
                w.failed,
                w.retry_count,
-               w.created_at, w.completed_at
+               w.created_at, w.completed_at, w.idempotency_key
         from {S}.wave w
         """;
 

@@ -59,6 +59,16 @@ public interface IWaveBuilder
         where TBatch : notnull;
 
     /// <summary>
+    /// Makes this create <b>idempotent</b>: at most one wave is ever created under <paramref name="key"/>. If one
+    /// already exists, <see cref="DispatchAsync"/> runs no fan-out and returns it (in whatever state it has
+    /// reached). Derive the key from the event that triggers the wave, so a create that is retried — after a
+    /// timeout, or a crash between committing the business change and creating the wave — cannot fan the job out
+    /// twice. The key stays taken until retention purges the wave. Create only: an in-flight <c>Continue</c> is
+    /// already made once per expansion.
+    /// </summary>
+    IWaveBuilder WithIdempotencyKey(string key);
+
+    /// <summary>
     /// Runs every accumulated <c>INSERT SELECT</c>, persists the wave (Active), and returns it.
     /// </summary>
     Task<Wave> DispatchAsync(CancellationToken ct = default);

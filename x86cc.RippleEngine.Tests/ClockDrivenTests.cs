@@ -197,7 +197,7 @@ public sealed class ClockDrivenTests
             return null;
         };
 
-        pipeline.Post(Ripple(attempt: 1, maxAttempts: 3));
+        pipeline.Post(Ripple(attempt: 3, maxAttempts: 3)); // its LAST attempt
         var context = await _probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var stop = pipeline.StopAsync(); // arms the drain deadline synchronously
@@ -210,6 +210,46 @@ public sealed class ClockDrivenTests
         context.CancellationToken.IsCancellationRequested.ShouldBeTrue();
         await stop.WaitAsync(TimeSpan.FromSeconds(10));
         _store.Failed.Count.ShouldBe(1, "the cancelled attempt's outcome is still written");
+
+        // ...as a RELEASE, not a failure: shutdown stopped it, so even on its last attempt it is requeued with the
+        // attempt handed back instead of being failed terminally for a restart it had nothing to do with.
+        var outcome = _store.Failed.Single();
+        outcome.Released.ShouldBeTrue();
+        outcome.Terminal.ShouldBeFalse();
+        outcome.Report.ShouldNotBeNull().ShouldContain("Abandoned");
+    }
+
+    /// <summary>Release is only for work the SHUTDOWN stopped. A handler that had already overrun its own
+    /// ExecutionTimeout when the drain ran out failed on its own account and is settled as an ordinary failure.</summary>
+    [Fact]
+    public async Task a_handler_that_overran_its_own_timeout_is_not_released_by_a_shutdown()
+    {
+        var pipeline = BuildPipeline(o =>
+        {
+            o.ExecutionTimeout = TimeSpan.FromSeconds(5);
+            o.ShutdownDrainGrace = TimeSpan.FromSeconds(10);
+            o.HandlerCancellationGrace = TimeSpan.FromSeconds(60);
+        });
+        using var letGo = new ManualResetEventSlim();
+        _probe.Behaviour = (ctx, _) =>
+        {
+            _probe.Started.TrySetResult(ctx);
+            letGo.Wait(); // ignores its token, so it is still running when the drain runs out
+            ctx.CancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<SplashReport?>(null);
+        };
+
+        pipeline.Post(Ripple(attempt: 3, maxAttempts: 3));
+        await _probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        _time.Advance(TimeSpan.FromSeconds(5)); // its own deadline passes first...
+        var stop = pipeline.StopAsync();
+        _time.Advance(TimeSpan.FromSeconds(10)); // ...then the drain runs out
+        letGo.Set();
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var outcome = _store.Failed.Single();
+        outcome.Released.ShouldBeFalse();
+        outcome.Terminal.ShouldBeTrue();
     }
 
     /// <summary>A failed settlement write is retried on the clock — 250ms, then doubled — and the attempt keeps its

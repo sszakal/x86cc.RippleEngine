@@ -83,6 +83,15 @@ materialised in the client. Variants:
 - **In-memory** (`ICollectionWaveGenerator`) — for work items the caller already holds (no queryable source),
   e.g. the sample's seed wave, which fans out "generate companies [start..start+N)" tasks.
 
+**A create can be made idempotent.** The fan-out runs on the engine's own connection, so it cannot commit with
+the business change that triggers it: the caller commits its change, then creates the wave, and if that call
+times out or the process dies in between it has to try again. `builder.WithIdempotencyKey(key)` (both builder
+interfaces) makes that safe — at most one wave exists per key, and a repeated `DispatchAsync` returns it without
+fanning out. `WaveIdempotency` takes a transaction-scoped advisory lock on the key and looks the wave up *before*
+any insert (the query-source path writes the wave row last, and a duplicate must be caught before a
+multi-million-row fan-out, not after); a unique partial index on `wave.idempotency_key` is the backstop. The key
+frees up when retention purges the wave. The caller still owns the retry — this is not a transactional outbox.
+
 **Two verbs, one mental model.** Every generator — in-memory (`ICollectionWaveGenerator`), Marten
 (`IMartenWaveGenerator`), EF (`IEfWaveGenerator`) — exposes the same pair: **`Create`** starts a new wave;
 **`Continue(context)`** *expands an existing wave from inside a handler*, appending ripples parented to the
@@ -246,6 +255,12 @@ Dispatcher (1 per instance)                 ExecutionPipeline
   freed, and `ripple.abandoned` counts it. The handler cannot be killed and may still be running — tolerated for
   the same reason a recovery re-run is (idempotent handlers) — and its DI scope is disposed only when it returns.
   Handlers run via `Task.Run` so that one blocking synchronously is covered too.
+- **Shutdown releases what it interrupts.** A handler cancelled because `ShutdownDrainGrace` ran out (and not
+  because it overran its own `ExecutionTimeout`) did not fail, so it is not settled as a failure: the ripple goes
+  back to `Pending` at once with **the attempt handed back** (`attempt - 1`) and an `Abandoned` splash. A restart
+  therefore can't spend a ripple's retries or, on its last attempt, fail it terminally. The cost is an audit
+  oddity — the re-run reuses the attempt number, so a ripple can show two splashes for one attempt. A process
+  that is hard-killed instead still goes through recovery, which does count the attempt (its poison guard).
 - **Outcome handling.** A handler returns a `SplashReport` built by exception — `report.Success(id)` /
   `report.Failed(id, msg)`, aggregating targets by `(outcome, message)`; unreported targets are inferred
   succeeded. The attempt fails if it throws **or** reports any Failed target — then it retries with exponential

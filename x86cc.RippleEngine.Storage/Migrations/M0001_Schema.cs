@@ -59,9 +59,16 @@ public sealed class M0001_Schema : Migration
                 compacted_at  timestamptz null,
                 expire_at     timestamptz null,
                 avg_duration_ms     bigint null,
-                splash_sample_count bigint not null default 0
+                splash_sample_count bigint not null default 0,
+                idempotency_key     text   null
             )
             """);
+        // A wave created under a caller-supplied key (WithIdempotencyKey) is created once: a repeat of the create
+        // returns this wave instead of fanning out again (see WaveIdempotency, which does the check up front —
+        // this index is its lookup and the backstop). Partial: most waves carry no key. The key frees up when
+        // retention purges the wave row.
+        Execute.Sql($"create unique index ux_wave_idempotency_key on {SchemaName}.wave (idempotency_key) " +
+                    $"where idempotency_key is not null");
         Execute.Sql($"create index ix_wave_active on {SchemaName}.wave (created_at) where status = 'Active'");
         // The compaction working set: terminal waves whose splashes/ripples haven't been rolled into a report yet.
         Execute.Sql($"create index ix_wave_uncompacted on {SchemaName}.wave (completed_at) " +

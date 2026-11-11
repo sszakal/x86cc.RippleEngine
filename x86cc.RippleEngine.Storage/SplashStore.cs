@@ -18,6 +18,13 @@ public readonly record struct RippleCompletion(
 /// <see cref="Terminal"/> means the attempt was the last allowed, so the ripple is marked Failed; otherwise it
 /// returns to Pending, eligible again at <see cref="NextAttemptAt"/>.
 /// </summary>
+/// <param name="Released">
+/// The attempt did not fail — the engine stopped it (shutdown ran past the drain grace and cancelled the handler).
+/// The ripple goes back to Pending at once and <b>the attempt is handed back</b> (<c>attempt - 1</c>), so a
+/// restart can neither use up a ripple's retries nor, on its last attempt, fail it terminally for something that
+/// was never its fault. Its splash is recorded <c>Abandoned</c>, not <c>Failed</c>. <see cref="Terminal"/> and
+/// <see cref="NextAttemptAt"/> are ignored.
+/// </param>
 /// <param name="EndedAt">
 /// When the handler finished — stamped by the caller at that moment, NOT when this settlement is written. The
 /// two are far apart: an outcome waits for its batch to fill and can sit through settlement retry backoff, and
@@ -27,7 +34,7 @@ public readonly record struct RippleCompletion(
 /// </param>
 public readonly record struct RippleFailure(
     Guid RippleId, Guid WaveId, int Attempt, DateTimeOffset StartedAt, string? Report,
-    bool Terminal, DateTimeOffset? NextAttemptAt, DateTimeOffset? EndedAt = null);
+    bool Terminal, DateTimeOffset? NextAttemptAt, DateTimeOffset? EndedAt = null, bool Released = false);
 
 /// <summary>
 /// Settlement — the write side a handler's outcome flows into. Records the splash's audit row (its
@@ -115,7 +122,7 @@ internal sealed class SplashStore(RippleDataSource dataSource, TimeProvider time
         var claimedAt = new Dictionary<(Guid Id, int Attempt), DateTimeOffset?>();
 
         // Terminal failures flip to Failed in one set-based update; RETURNING gives the real (fenced) set.
-        var terminals = batch.Where(f => f.Terminal).ToList();
+        var terminals = batch.Where(f => f is { Terminal: true, Released: false }).ToList();
         if (terminals.Count > 0)
         {
             foreach (var m in await conn.QueryAsync<MovedRipple>(new CommandDefinition(
@@ -140,7 +147,7 @@ internal sealed class SplashStore(RippleDataSource dataSource, TimeProvider time
         // (id, next_attempt_at) pairs. schedule_order is untouched, so a retried ripple keeps its queue position.
         // If the ripple's type has since been paused, it requeues into 'Paused' instead (StateExpr), so a retry
         // can't sneak paused work back into the claim — it waits for resume like the rest of its type.
-        var retries = batch.Where(f => !f.Terminal).ToList();
+        var retries = batch.Where(f => f is { Terminal: false, Released: false }).ToList();
         if (retries.Count > 0)
         {
             foreach (var m in await conn.QueryAsync<MovedRipple>(new CommandDefinition(
@@ -162,11 +169,39 @@ internal sealed class SplashStore(RippleDataSource dataSource, TimeProvider time
             }
         }
 
-        // Record a failed splash for every ripple that actually transitioned (terminal or requeued).
+        // Releases go back to Pending (or 'Paused', as above) with the attempt handed back and no backoff: the
+        // engine interrupted them, so the next claim re-runs the SAME attempt number rather than the next one.
+        // The fence still reads the attempt as claimed (r.attempt = u.attempt, evaluated before the SET applies),
+        // and RETURNING hands back u.attempt — the number this outcome belongs to, not the decremented column —
+        // because that is the key the batch is matched on below.
+        var releases = batch.Where(f => f.Released).ToList();
+        if (releases.Count > 0)
+        {
+            foreach (var m in await conn.QueryAsync<MovedRipple>(new CommandDefinition(
+                $"""
+                 update {S}.ripple r set state = {ScheduleOrderSql.StateExpr("r.type_key")}, claimed_by = null,
+                        next_attempt_at = null, attempt = r.attempt - 1
+                 from unnest(@ids::uuid[], @attempts::int[]) as u(id, attempt)
+                 where r.id = u.id and r.claimed_by = @me and r.state = 'Running' and r.attempt = u.attempt
+                 returning r.id, u.attempt, r.claimed_at
+                 """,
+                new
+                {
+                    ids = releases.Select(f => f.RippleId).ToArray(),
+                    attempts = releases.Select(f => f.Attempt).ToArray(),
+                    me = instanceId
+                }, tx, cancellationToken: ct)))
+            {
+                claimedAt[(m.Id, m.Attempt)] = m.ClaimedAt;
+            }
+        }
+
+        // Record a splash for every ripple that actually transitioned: Failed for a terminal or requeued attempt,
+        // Abandoned for a released one (interrupted, not failed — the same outcome recovery records).
         var splashes = batch
             .Where(f => claimedAt.ContainsKey((f.RippleId, f.Attempt)))
             .Select(f => new SplashRow(f.RippleId, f.WaveId, f.Attempt, claimedAt[(f.RippleId, f.Attempt)],
-                f.StartedAt, f.EndedAt, SplashOutcome.Failed, f.Report))
+                f.StartedAt, f.EndedAt, f.Released ? SplashOutcome.Abandoned : SplashOutcome.Failed, f.Report))
             .ToList();
 
         await InsertSplashesAsync(conn, tx, splashes, ct);

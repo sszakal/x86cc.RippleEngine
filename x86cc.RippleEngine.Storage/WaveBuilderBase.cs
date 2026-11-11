@@ -32,6 +32,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     private readonly Guid _waveId;
     private readonly RippleExpansion? _expansion;
     private readonly List<Spec> _specs = new();
+    private string? _idempotencyKey;
 
     // Continue mode is exactly "dispatching a running ripple's expansion".
     private bool ContinueExisting => _expansion is not null;
@@ -82,6 +83,18 @@ internal abstract class WaveBuilderBase : IWaveBuilder
         return this;
     }
 
+    public IWaveBuilder WithIdempotencyKey(string key)
+    {
+        if (ContinueExisting)
+        {
+            throw new InvalidOperationException(
+                "An idempotency key applies to creating a wave; an in-flight Continue is already made once per expansion.");
+        }
+
+        _idempotencyKey = WaveIdempotency.Validate(key);
+        return this;
+    }
+
     public async Task<Wave> DispatchAsync(CancellationToken ct = default)
     {
         try
@@ -94,6 +107,14 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             if (_expansion is { } repeated && !await ExpansionSql.TryBeginAsync(conn, tx, _waveId, repeated, ct))
             {
                 return await ReadWaveAsync(conn, tx, ct);
+            }
+
+            // A create is made once per idempotency key — checked here, BEFORE the fan-out, so a repeated create
+            // costs one lookup rather than a second multi-million-row insert (see WaveIdempotency).
+            if (_idempotencyKey is { } key
+                && await WaveIdempotency.FindExistingAsync(conn, tx, key, ct) is { } existing)
+            {
+                return existing;
             }
 
             long total = 0;
@@ -163,6 +184,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             Name = _name ?? "",
             Type = _waveType ?? "default",
             PayloadType = _waveType,
+            IdempotencyKey = _idempotencyKey,
             CreatedAt = createdAt,
             Status = total > 0 ? WaveStatus.Active : WaveStatus.Completed,
             CompletedAt = total > 0 ? null : createdAt,
@@ -173,13 +195,13 @@ internal abstract class WaveBuilderBase : IWaveBuilder
         // The wave row keeps ripple_count; there are no counters to seed — the wave's live numbers are
         // recomputed from the ripples themselves by refresh_wave_stats().
         await conn.ExecuteAsync(new CommandDefinition(
-            $"insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at) " +
-            "values (@id, @name, @type, @payload::jsonb, @payloadType, @status, @rippleCount, @createdAt, @completedAt);",
+            $"insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key) " +
+            "values (@id, @name, @type, @payload::jsonb, @payloadType, @status, @rippleCount, @createdAt, @completedAt, @idempotencyKey);",
             new
             {
                 id = wave.Id, name = wave.Name, type = wave.Type, payload = _wavePayloadJson,
                 payloadType = _waveType, status = wave.Status.ToString(), rippleCount = wave.RippleCount,
-                createdAt = wave.CreatedAt, completedAt = wave.CompletedAt
+                createdAt = wave.CreatedAt, completedAt = wave.CompletedAt, idempotencyKey = _idempotencyKey
             }, tx, cancellationToken: ct));
 
         return wave;

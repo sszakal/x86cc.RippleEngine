@@ -40,6 +40,11 @@ internal static class SplashReportBuilder
     public static string Failed(IReadOnlyList<string> targetIds, string message)
         => Serialize(SplashReport.Create().Failed(targetIds, message).Items);
 
+    /// <summary>The report for an attempt the engine itself interrupted (shutdown past the drain grace): every
+    /// target <see cref="SplashOutcome.Abandoned"/> with the reason — not Failed, because nothing failed.</summary>
+    public static string Released(IReadOnlyList<string> targetIds, string message)
+        => Serialize([new SplashReportItem(SplashOutcome.Abandoned, message, targetIds)]);
+
     /// <summary>
     /// The stand-in report for an outcome whose own report the database refused to store (see
     /// <c>SettlementWriter</c>): one targetless item that keeps the attempt's <paramref name="outcome"/> and says

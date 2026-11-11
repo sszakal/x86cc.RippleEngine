@@ -39,6 +39,7 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
     private readonly string? _name;
     private readonly string? _waveType;
     private readonly JsonDocument? _wavePayload;
+    private string? _idempotencyKey;
 
     // Continue-mode fields; _continueExisting toggles which DispatchAsync path runs.
     private readonly bool _continueExisting;
@@ -70,6 +71,18 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
         return this;
     }
 
+    public ICollectionWaveBuilder WithIdempotencyKey(string key)
+    {
+        if (_continueExisting)
+        {
+            throw new InvalidOperationException(
+                "An idempotency key applies to creating a wave; an in-flight Continue is already made once per expansion.");
+        }
+
+        _idempotencyKey = WaveIdempotency.Validate(key);
+        return this;
+    }
+
     public Task<Wave> DispatchAsync(CancellationToken ct = default)
         => _continueExisting ? ContinueAsync(ct) : CreateAsync(ct);
 
@@ -84,7 +97,8 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
                 Name = _name ?? "",
                 Type = _waveType ?? "default",
                 PayloadType = _waveType,
-                Payload = _wavePayload
+                Payload = _wavePayload,
+                IdempotencyKey = _idempotencyKey
             }, _seeds, ct);
 
             // DETACH the payload before the finally disposes it: the store hands back the same Wave instance it

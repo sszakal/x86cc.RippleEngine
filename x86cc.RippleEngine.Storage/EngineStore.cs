@@ -38,6 +38,10 @@ public interface IEngineStore
     /// already <see cref="WaveStatus.Completed"/> (<c>ripple_count = 0</c>, <c>completed_at</c> set) — a job with
     /// nothing to do, not a zero-ripple Active wave that could never drain. A non-empty create is
     /// <see cref="WaveStatus.Active"/> with its ripples claimable at once.
+    /// <para>
+    /// If <paramref name="wave"/> carries an <see cref="Wave.IdempotencyKey"/> and a wave already exists under
+    /// that key, nothing is created and THAT wave is returned (whatever state it has reached).
+    /// </para>
     /// </summary>
     Task<Wave> CreateWaveWithRipplesAsync(Wave wave, IReadOnlyList<RippleSeed> seeds, CancellationToken ct = default);
 
@@ -281,8 +285,8 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
             $"""
-             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at)
-             values (@Id, @Name, @Type, @Payload, @PayloadType, 'Active', 0, @CreatedAt)
+             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, idempotency_key)
+             values (@Id, @Name, @Type, @Payload, @PayloadType, 'Active', 0, @CreatedAt, @IdempotencyKey)
              """,
             wave, cancellationToken: ct));
         return wave;
@@ -434,17 +438,24 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
+        // Created once per idempotency key: a repeat of the create gets the first one's wave back.
+        if (wave.IdempotencyKey is { } key
+            && await WaveIdempotency.FindExistingAsync(conn, tx, key, ct) is { } existing)
+        {
+            return existing;
+        }
+
         // One transaction: the wave row (ripple_count set directly — no later bump) + its ripples. Atomic, so a
         // fault can never strand a wave without its ripples.
         await conn.ExecuteAsync(new CommandDefinition(
             $"""
-             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at)
-             values (@Id, @Name, @Type, @Payload, @PayloadType, @Status, @RippleCount, @CreatedAt, @CompletedAt)
+             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key)
+             values (@Id, @Name, @Type, @Payload, @PayloadType, @Status, @RippleCount, @CreatedAt, @CompletedAt, @IdempotencyKey)
              """,
             new
             {
                 wave.Id, wave.Name, wave.Type, wave.Payload, wave.PayloadType,
-                Status = wave.Status.ToString(), wave.RippleCount, wave.CreatedAt, wave.CompletedAt
+                Status = wave.Status.ToString(), wave.RippleCount, wave.CreatedAt, wave.CompletedAt, wave.IdempotencyKey
             },
             tx, cancellationToken: ct));
 

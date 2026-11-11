@@ -173,6 +173,7 @@ internal sealed class ExecutionPipeline(
         IServiceScope? scope = null;
         Task<SplashReport?>? run = null;
         var abandoned = false;
+        var released = false;
         try
         {
             if (!registry.TryGet(ripple.TypeKey, out var prepare))
@@ -193,7 +194,17 @@ internal sealed class ExecutionPipeline(
         {
             // Terminated outside the handler: every target gets the same Failed outcome + the exception message.
             abandoned = ex is HandlerAbandonedException;
-            report = SplashReportBuilder.Failed(targetIds, Flatten(ex));
+            // Stopped by US, not failed: the shutdown drain ran out and cancelled the handler, which then threw
+            // its cancellation (or ignored it and was abandoned). Counting that as a failed attempt let a
+            // restart spend a ripple's retries — and, on its last attempt, write it terminally Failed and fault
+            // its wave over work that never failed. It is released instead: requeued at once with the attempt
+            // handed back. Only when the per-ripple deadline did NOT also fire — a handler that overran
+            // ExecutionTimeout failed on its own account, whenever the process happened to stop.
+            released = _drainCts.IsCancellationRequested && !deadlineCts.IsCancellationRequested
+                       && ex is OperationCanceledException or HandlerAbandonedException;
+            report = released
+                ? SplashReportBuilder.Released(targetIds, "released: interrupted by shutdown; the attempt was not counted")
+                : SplashReportBuilder.Failed(targetIds, Flatten(ex));
             failed = true;
         }
         finally
@@ -224,6 +235,12 @@ internal sealed class ExecutionPipeline(
         {
             settlement.Succeeded(new RippleCompletion(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, endedAt));
             metrics.Succeeded(elapsedMs, ripple.TypeKey);
+        }
+        else if (released)
+        {
+            // No retry decision to make and no failure to count: it simply goes back to the queue.
+            settlement.Failed(new RippleFailure(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report,
+                Terminal: false, NextAttemptAt: null, endedAt, Released: true));
         }
         else
         {

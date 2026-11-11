@@ -173,7 +173,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
    `MaxConcurrency`, with a `PrefetchFactor` input buffer). The handler runs in a per-ripple DI scope; throw =
    failed (retry with backoff via `IRetryPolicy`, then terminal), return = succeeded. A handler still running
    `HandlerCancellationGrace` after its token was cancelled is abandoned: the attempt fails and the slot is
-   freed, though the handler itself may run on. Outcomes batch-write via
+   freed, though the handler itself may run on. A handler cancelled by the shutdown drain running out is
+   *released*, not failed: requeued at once with the attempt handed back (`RippleFailure.Released`). Outcomes batch-write via
    `SettlementWriter`'s channels, and an attempt keeps its `InFlightTracker` slot until its write lands. A
    write the database *rejects* (non-transient SQLSTATE — bad data, not an outage) is never retried as-is: the
    batch is split to isolate the offending outcome, which settles with a placeholder report.
@@ -253,6 +254,9 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
   (`ExpansionSql`, shared by both insert paths). The key defaults to the `Continue` call's ordinal within the
   attempt; a handler whose expansion order varies passes `Continue(context, expansionKey)`. Any new insert path
   for in-flight expansion must go through `ExpansionSql.TryBeginAsync`/`CompleteAsync`.
+- Wave creation is not atomic with the caller's business transaction (it runs on the engine's connection). The
+  supported answer is `builder.WithIdempotencyKey(key)` — one wave per key, a repeat returns it (`WaveIdempotency`,
+  checked before the fan-out) — so the caller can safely retry a create.
 - Marten handlers open their OWN session from `IDocumentStore` (`store.LightweightSession()`), not an
   injected scoped `IDocumentSession` — the latter doesn't isolate cleanly across the engine's per-ripple
   scopes under concurrency.

@@ -49,6 +49,12 @@ public class Wave
     /// <summary>The CLR type name of <see cref="Payload"/> (its <c>$type</c> discriminator).</summary>
     public string? PayloadType { get; set; }
 
+    /// <summary>
+    /// The caller-supplied key this wave was created under (a builder's <c>WithIdempotencyKey</c>), or null. A
+    /// create that repeats the key returns this wave instead of fanning out again.
+    /// </summary>
+    public string? IdempotencyKey { get; set; }
+
     public WaveStatus Status { get; set; }
 
     /// <summary>Total ripples ever created for the wave (grows with executor-driven expansion).</summary>
