@@ -103,8 +103,8 @@ public sealed class CollectionSourceTests : RippleTestBase
             .Create("group recalc", new RecalcContext { LegislationCode = "VAT26" })
             .AddRipple(new RecalcCompany { CompanyId = Guid.NewGuid() })
             .DispatchAsync();
-        var parentRippleId = (await QueryGuidsAsync(
-            "select id from ripple.ripple where wave_id = @id", new { id = wave.Id })).Single();
+        // Claimed, so it is Running on attempt 1 — only a running ripple may expand its wave.
+        var parentRippleId = (await Engine.PollAsync(1, "inst-1", 0)).Single().Id;
 
         // Expand it in-memory via the same Continue(context) verb the queryable generators use.
         var context = new StubRippleContext(wave.Id, parentRippleId);

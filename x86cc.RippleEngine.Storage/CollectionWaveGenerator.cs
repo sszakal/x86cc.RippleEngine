@@ -19,16 +19,16 @@ internal sealed class CollectionWaveGenerator(IEngineStore store) : ICollectionW
         => new CollectionWaveBuilder(store, name, RippleTypeName.Of<TWave>(),
             JsonSerializer.SerializeToDocument(wavePayload, typeof(TWave), RippleJson.Options));
 
-    public ICollectionWaveBuilder Continue(IRippleContext context)
-        => new CollectionWaveBuilder(store, context.WaveId, context.RippleId);
+    public ICollectionWaveBuilder Continue(IRippleContext context, string? expansionKey = null)
+        => new CollectionWaveBuilder(store, context.WaveId, RippleExpansion.For(context, expansionKey));
 }
 
 /// <summary>
 /// Accumulates serialized ripple seeds across <c>AddRipples</c> calls, then on <see cref="DispatchAsync"/>
 /// materialises them via <see cref="IEngineStore"/> — reusing the same <c>schedule_order</c> stamping
 /// (base-clamp, batch/gap) as the query-source fan-out. In <b>create</b> mode it first inserts the wave row;
-/// in <b>continue</b> mode it appends to an existing wave, stamping <see cref="_parentRippleId"/> on each new
-/// ripple for the audit lineage.
+/// in <b>continue</b> mode it appends to an existing wave as the <see cref="_expansion"/> of a running ripple —
+/// stamped on each new ripple as its parent, and made only once however often that ripple is retried.
 /// </summary>
 internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
 {
@@ -43,7 +43,7 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
     // Continue-mode fields; _continueExisting toggles which DispatchAsync path runs.
     private readonly bool _continueExisting;
     private readonly Guid _waveId;
-    private readonly Guid? _parentRippleId;
+    private readonly RippleExpansion _expansion;
 
     /// <summary>Create mode: a brand-new wave is inserted on dispatch.</summary>
     public CollectionWaveBuilder(IEngineStore store, string name, string? waveType, JsonDocument? wavePayload)
@@ -54,13 +54,13 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
         _wavePayload = wavePayload;
     }
 
-    /// <summary>Continue mode: ripples are appended to an existing wave, parented to <paramref name="parentRippleId"/>.</summary>
-    public CollectionWaveBuilder(IEngineStore store, Guid waveId, Guid parentRippleId)
+    /// <summary>Continue mode: ripples are appended to an existing wave as <paramref name="expansion"/>.</summary>
+    public CollectionWaveBuilder(IEngineStore store, Guid waveId, RippleExpansion expansion)
     {
         _store = store;
         _continueExisting = true;
         _waveId = waveId;
-        _parentRippleId = parentRippleId;
+        _expansion = expansion;
     }
 
     public ICollectionWaveBuilder AddRipples<TMessage>(IEnumerable<TMessage> messages)
@@ -107,7 +107,8 @@ internal sealed class CollectionWaveBuilder : ICollectionWaveBuilder
 
     private async Task<Wave> ContinueAsync(CancellationToken ct)
     {
-        await _store.AddRipplesAsync(_waveId, _seeds, parentRippleId: _parentRippleId, ct: ct);
+        // False (already expanded by an earlier attempt) is not an error: the wave already has these ripples.
+        await _store.ExpandWaveAsync(_waveId, _expansion, _seeds, ct);
 
         // The wave already exists; return its current row (its live numbers are periodically recomputed onto
         // the wave row by refresh_wave_stats(), exactly like the query-source Continue).

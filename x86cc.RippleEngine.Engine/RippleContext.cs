@@ -30,4 +30,10 @@ internal sealed class RippleContext(
 
     /// <summary>Cancels when the execution timeout elapses or the host is shutting down.</summary>
     public CancellationToken CancellationToken { get; } = cancellationToken;
+
+    private int _expansions;
+
+    /// <summary>Counts this attempt's expansions. A context lives for one attempt, so every attempt counts from 1
+    /// and its n-th <c>Continue</c> gets the same ordinal as the previous attempt's n-th.</summary>
+    public int NextExpansionOrdinal() => Interlocked.Increment(ref _expansions);
 }

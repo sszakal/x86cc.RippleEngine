@@ -28,7 +28,9 @@ public interface IEfWaveGenerator
     /// <c>INSERT … SELECT</c> — the same <c>Continue</c> verb the in-memory
     /// <see cref="ICollectionWaveGenerator"/> exposes, only the source differs. The wave id and parent ripple
     /// id are read from <paramref name="rippleContext"/> (a running handler's <see cref="IRippleContext"/>);
-    /// new ripples are stamped with that ripple as parent for lineage.
+    /// new ripples are stamped with that ripple as parent for lineage. The expansion is made <b>once</b>: a retry
+    /// of the ripple that dispatches it again adds nothing (see <see cref="ICollectionWaveGenerator.Continue"/>
+    /// for the rule and for when to pass <paramref name="expansionKey"/>).
     /// </summary>
-    IWaveBuilder Continue(DbContext context, IRippleContext rippleContext);
+    IWaveBuilder Continue(DbContext context, IRippleContext rippleContext, string? expansionKey = null);
 }

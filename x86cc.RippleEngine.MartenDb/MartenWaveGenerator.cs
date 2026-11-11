@@ -10,17 +10,17 @@ internal sealed class MartenWaveGenerator(RippleDataSource dataSource, TimeProvi
 {
     public IWaveBuilder Create(IQuerySession session, string name)
         => new MartenWaveBuilder(session, dataSource, time, name, waveType: null, wavePayloadJson: null,
-            Guid.NewGuid(), parentRippleId: null, continueExisting: false);
+            Guid.NewGuid(), expansion: null);
 
     public IWaveBuilder Create<TWave>(IQuerySession session, string name, TWave wavePayload)
         where TWave : notnull
         => new MartenWaveBuilder(session, dataSource, time, name, waveType: RippleTypeName.Of<TWave>(),
             wavePayloadJson: JsonSerializer.Serialize(wavePayload, typeof(TWave), RippleJson.Options),
-            Guid.NewGuid(), parentRippleId: null, continueExisting: false);
+            Guid.NewGuid(), expansion: null);
 
-    public IWaveBuilder Continue(IQuerySession session, IRippleContext context)
+    public IWaveBuilder Continue(IQuerySession session, IRippleContext context, string? expansionKey = null)
         => new MartenWaveBuilder(session, dataSource, time, name: null, waveType: null, wavePayloadJson: null,
-            context.WaveId, context.RippleId, continueExisting: true);
+            context.WaveId, RippleExpansion.For(context, expansionKey));
 }
 
 public static class RippleMartenGenerationExtensions

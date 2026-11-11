@@ -246,7 +246,13 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
   `typeof(T).Name` directly: fan-out and the worker registry must resolve identically. Pin a name with the
   attribute before renaming a payload class, or ripples already in the DB lose their handler; the registry
   throws if two different CLR types resolve to one `type_key`.
-- Handlers must be **idempotent** (a ripple can run more than once via retry or recovery).
+- Handlers must be **idempotent** (a ripple can run more than once via retry or recovery). The one thing a
+  handler can't make idempotent itself — `Continue(context)` — the engine does: each expansion is recorded in
+  `ripple.expansion` per `(parent ripple, expansion key)` and made **once** (a retry's repeat inserts nothing;
+  first attempt wins), and is fenced on the parent still being `Running` on the expanding attempt
+  (`ExpansionSql`, shared by both insert paths). The key defaults to the `Continue` call's ordinal within the
+  attempt; a handler whose expansion order varies passes `Continue(context, expansionKey)`. Any new insert path
+  for in-flight expansion must go through `ExpansionSql.TryBeginAsync`/`CompleteAsync`.
 - Marten handlers open their OWN session from `IDocumentStore` (`store.LightweightSession()`), not an
   injected scoped `IDocumentSession` — the latter doesn't isolate cleanly across the engine's per-ripple
   scopes under concurrency.

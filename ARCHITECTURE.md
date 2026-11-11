@@ -41,6 +41,7 @@ paths are served by **partial indexes** that hold only the small working set, ne
 | `splash` | one row per execution attempt (the audit trail: outcome, per-target `report` jsonb, claimed/started/ended, duration) | append-only |
 | `instance_heartbeat` | cluster membership: `last_seen_at`, `executing` | tiny |
 | `type_schedule` | per-`type_key` config: `batch_size` + `gap_seconds` (scheduling) + `max_attempts` (retry ceiling) | tiny, read at fan-out + claim |
+| `expansion` | the in-flight expansion ledger: one row per `Continue` dispatch, keyed `(parent_ripple_id, expansion_key)` (§2) | one row per expansion, deleted at compaction |
 
 Key modelling choices:
 
@@ -91,6 +92,25 @@ server-side `INSERT … SELECT` for expansion as for creation (a group ripple di
 never loading them), while the in-memory generator serializes items the handler already holds. `Continue`
 takes the handler's `IRippleContext`, which carries the wave id + this ripple's id. This is why "a wave's
 ripple count keeps growing as handlers expand it" (§1) — expansion is just `Continue` on the same builders.
+
+**An expansion is made once, by a ripple that is still running.** The children commit in their own transaction,
+*ahead* of the parent's outcome — necessarily, since the parent staying `Running` past that commit is what keeps
+the wave from looking drained. So an attempt that expands and then fails, times out or dies leaves its children
+behind, and the retry (the same handler code) would add a second set: every child run twice, `ripple_count`
+inflated. Handler idempotency can't cover that — a handler has no way to know it already expanded. Both insert
+paths therefore bracket the expansion's transaction with `ExpansionSql`:
+
+1. **Claim it in the ledger** — `insert into ripple.expansion … on conflict do nothing` on
+   `(parent_ripple_id, expansion_key)`. A conflict means an earlier attempt already made this expansion: nothing
+   is inserted and the wave is returned as it stands. **First wins** — its children may already be running. The
+   key defaults to the ordinal of the `Continue` call within the attempt (`#1`, `#2`, …, counted by the
+   `IRippleContext`), which is stable for a handler that expands in the same order each attempt; one that
+   doesn't passes `Continue(context, expansionKey)`.
+2. **Fence it on the parent** — last, just before the commit: the parent must still be `Running` on the
+   expanding attempt (`select … for share`, holding the row against a concurrent settle/recovery until the
+   children are visible), else the dispatch throws and rolls back. That refuses an attempt that outlived its
+   claim — an abandoned handler (§5), a stalled instance whose work was recovered — whose late `Continue` would
+   otherwise add ripples to a wave that may already have completed.
 
 The subtle `schedule_order` stamping (§3) lives once in `ScheduleOrderSql`, shared by both insert paths (the
 unnest insert behind the in-memory generator and the `INSERT … SELECT` behind the queryable ones), so a

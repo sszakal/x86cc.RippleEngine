@@ -29,7 +29,9 @@ public interface IMartenWaveGenerator
     /// <see cref="ICollectionWaveGenerator"/> exposes, only the source differs. The wave id and parent ripple
     /// id are read from <paramref name="context"/> (a running handler's <see cref="IRippleContext"/>); new
     /// ripples are stamped with that ripple as parent for lineage, the wave's <c>ripple_count</c> grows, and it
-    /// can't complete before the children run.
+    /// can't complete before the children run. The expansion is made <b>once</b>: a retry of the ripple that
+    /// dispatches it again adds nothing (see <see cref="ICollectionWaveGenerator.Continue"/> for the rule and
+    /// for when to pass <paramref name="expansionKey"/>).
     /// </summary>
-    IWaveBuilder Continue(IQuerySession session, IRippleContext context);
+    IWaveBuilder Continue(IQuerySession session, IRippleContext context, string? expansionKey = null);
 }

@@ -145,13 +145,18 @@ public sealed class CompanyGroupTax : IRippleTarget
 
 /// <summary>
 /// A minimal <see cref="IRippleContext"/> for storage-level tests that exercise <c>Continue(context)</c>
-/// without running the engine — only <see cref="WaveId"/>/<see cref="RippleId"/> are read by the generators.
+/// without running the engine — the generators read <see cref="WaveId"/>/<see cref="RippleId"/>, the
+/// <see cref="Attempt"/> the expansion is fenced on, and the expansion ordinal. One instance stands for one
+/// attempt, as the engine's own context does: a retry is a NEW stub with the next attempt number.
 /// </summary>
-public sealed class StubRippleContext(Guid waveId, Guid rippleId) : IRippleContext
+public sealed class StubRippleContext(Guid waveId, Guid rippleId, int attempt = 1) : IRippleContext
 {
+    private int _expansions;
+
     public Guid WaveId { get; } = waveId;
     public Guid RippleId { get; } = rippleId;
-    public int Attempt => 1;
+    public int Attempt { get; } = attempt;
+    public int NextExpansionOrdinal() => Interlocked.Increment(ref _expansions);
     public int MaxAttempts => 1;
     public int CurrentRetryCount => 0;
     public int RetryCount => 0;

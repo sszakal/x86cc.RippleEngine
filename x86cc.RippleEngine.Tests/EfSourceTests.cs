@@ -95,8 +95,8 @@ public sealed class EfSourceTests : RippleTestBase
             .Create("group recalc", new RecalcContext { LegislationCode = "VAT26" })
             .AddRipple(new RecalcCompany { CompanyId = Guid.NewGuid() })
             .DispatchAsync();
-        var parentRippleId = (await QueryGuidsAsync(
-            "select id from ripple.ripple where wave_id = @id", new { id = wave.Id })).Single();
+        // Claimed, so it is Running on attempt 1 — only a running ripple may expand its wave.
+        var parentRippleId = (await Engine.PollAsync(1, "inst-1", 0)).Single().Id;
 
         // Expand it server-side from an EF query via the same Continue(context) verb Marten uses.
         var context = new StubRippleContext(wave.Id, parentRippleId);

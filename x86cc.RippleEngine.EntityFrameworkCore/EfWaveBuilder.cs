@@ -22,8 +22,8 @@ namespace x86cc.RippleEngine.EntityFrameworkCore;
 /// </summary>
 internal sealed class EfWaveBuilder(
     DbContext context, RippleDataSource dataSource, TimeProvider time, string? name, string? waveType,
-    string? wavePayloadJson, Guid waveId, Guid? parentRippleId, bool continueExisting)
-    : WaveBuilderBase(dataSource, time, name, waveType, wavePayloadJson, waveId, parentRippleId, continueExisting)
+    string? wavePayloadJson, Guid waveId, RippleExpansion? expansion)
+    : WaveBuilderBase(dataSource, time, name, waveType, wavePayloadJson, waveId, expansion)
 {
     public override IWaveBuilder AddRipples<TSource, TMessage>(
         Expression<Func<TSource, bool>> predicate,

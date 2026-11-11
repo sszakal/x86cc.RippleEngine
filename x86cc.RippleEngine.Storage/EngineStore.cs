@@ -49,17 +49,30 @@ public interface IEngineStore
     Task<Wave> CreateWaveAsync(Wave wave, CancellationToken ct = default);
 
     /// <summary>
-    /// Bulk-inserts pending ripples for a wave and bumps its <c>ripple_count</c>. The sanctioned use is
-    /// <b>in-flight expansion</b> — a handler spawning child ripples through a generator's <c>Continue(context)</c>,
-    /// where <paramref name="parentRippleId"/> is the spawning (<c>Running</c>) ripple, stamped onto each child's
-    /// <c>parent_ripple_id</c> (audit lineage). Because that parent is still <c>Running</c>, the wave can't be
-    /// observed drained mid-expansion. The new ripples get their <c>schedule_order</c> from the same base-clamp
+    /// Low-level plumbing: bulk-inserts pending ripples for a wave and bumps its <c>ripple_count</c>, with no
+    /// guard at all. In-flight expansion — a handler spawning child ripples through a generator's
+    /// <c>Continue(context)</c> — goes through <see cref="ExpandWaveAsync"/> instead, which makes the expansion
+    /// once and fences it on the spawning ripple still being <c>Running</c> (which is what keeps the wave from
+    /// being observed drained mid-expansion). <paramref name="parentRippleId"/> is stamped onto each ripple's
+    /// <c>parent_ripple_id</c> (audit lineage). The new ripples get their <c>schedule_order</c> from the same base-clamp
     /// rule as the fan-out; their retry ceiling is the per-type <c>max_attempts</c> resolved at claim time. Adding
     /// to a wave with no in-flight ripple (out of band) is a contract violation — completion/compaction assume it
     /// never happens.
     /// </summary>
     Task AddRipplesAsync(Guid waveId, IReadOnlyList<RippleSeed> ripples,
         Guid? parentRippleId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// <b>In-flight expansion</b>: adds <paramref name="ripples"/> to a wave on behalf of the running ripple
+    /// identified by <paramref name="expansion"/> (stamped as their <c>parent_ripple_id</c>), <b>once</b>. The
+    /// expansion is recorded per <c>(parent, key)</c>, so a retry of the parent that repeats it inserts nothing —
+    /// the first attempt's children stand. Fenced: the parent must still be <c>Running</c> on
+    /// <see cref="RippleExpansion.Attempt"/> when this commits, or it throws and adds nothing. What
+    /// <see cref="ICollectionWaveGenerator.Continue"/> dispatches through.
+    /// </summary>
+    /// <returns>True if the ripples were added; false if this expansion had already been made.</returns>
+    Task<bool> ExpandWaveAsync(Guid waveId, RippleExpansion expansion, IReadOnlyList<RippleSeed> ripples,
+        CancellationToken ct = default);
 
     Task<Wave?> GetWaveAsync(Guid id, CancellationToken ct = default);
 
@@ -285,7 +298,36 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
 
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
+        await InsertRipplesAsync(conn, tx, waveId, ripples, parentRippleId, ct);
+        await tx.CommitAsync(ct);
+    }
 
+    public async Task<bool> ExpandWaveAsync(Guid waveId, RippleExpansion expansion,
+        IReadOnlyList<RippleSeed> ripples, CancellationToken ct = default)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // An EMPTY expansion is recorded too: "the first attempt's expansion stands" has to hold whatever its
+        // size, and the query-source path can't know its size before it runs.
+        if (!await ExpansionSql.TryBeginAsync(conn, tx, waveId, expansion, ct))
+        {
+            return false; // already made — by an earlier attempt of this ripple, or earlier in this one
+        }
+
+        if (ripples.Count > 0)
+        {
+            await InsertRipplesAsync(conn, tx, waveId, ripples, expansion.ParentRippleId, ct);
+        }
+
+        await ExpansionSql.CompleteAsync(conn, tx, waveId, expansion, ripples.Count, ct);
+        await tx.CommitAsync(ct);
+        return true;
+    }
+
+    private static async Task InsertRipplesAsync(Npgsql.NpgsqlConnection conn, Npgsql.NpgsqlTransaction tx,
+        Guid waveId, IReadOnlyList<RippleSeed> ripples, Guid? parentRippleId, CancellationToken ct)
+    {
         // The wave's payload type forms the wave half of each ripple's composite type_key
         // ("{waveType}|{rippleType}"), which drives both scheduling config and handler resolution.
         // `exists` is read separately because payload_type is itself nullable — without it a MISSING wave is
@@ -336,8 +378,6 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
                 n = (long)ripples.Count
             },
             tx, cancellationToken: ct));
-
-        await tx.CommitAsync(ct);
     }
 
     // The set-based ripple fan-out INSERT (no wave-row write), shared by AddRipplesAsync (which appends a

@@ -98,7 +98,7 @@ public abstract class RippleTestBase : IAsyncLifetime
     {
         await using var conn = await Db.OpenConnectionAsync();
         await conn.ExecuteAsync(
-            "truncate ripple.ripple, ripple.wave, ripple.splash, ripple.report_chunk, " +
+            "truncate ripple.ripple, ripple.wave, ripple.splash, ripple.report_chunk, ripple.expansion, " +
             "ripple.ripple_type_metric, ripple.instance_heartbeat");
         // Clear per-type configs but keep the migration-seeded DEFAULT row — the hot-path SQL falls back to it,
         // so wiping it would break fan-out/claim on the next test.

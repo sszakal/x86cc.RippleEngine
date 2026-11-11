@@ -132,6 +132,25 @@ public sealed class M0001_Schema : Migration
         // DELETE buys exact per-type retention); it only has to serve terminal waves.
         Execute.Sql($"create index ix_ripple_wave on {SchemaName}.ripple (wave_id)");
 
+        // --- expansion: the ledger that makes an in-flight expansion happen ONCE ---------------------------
+        // One row per Continue(context) dispatch by a running ripple, keyed by (the expanding ripple, which of
+        // its expansions this is). A retry of that ripple repeats the key, conflicts here, and inserts no second
+        // set of children — see ExpansionSql for the whole argument. `attempt` is the attempt that made it and
+        // `ripple_count` how many ripples it added (audit only). Rows go when their wave compacts, which is what
+        // the wave_id index is for.
+        Execute.Sql($"""
+            create table {SchemaName}.expansion (
+                parent_ripple_id uuid        not null,
+                expansion_key    text        not null,
+                wave_id          uuid        not null,
+                attempt          int         not null,
+                ripple_count     bigint      not null default 0,
+                created_at       timestamptz not null default now(),
+                primary key (parent_ripple_id, expansion_key)
+            )
+            """);
+        Execute.Sql($"create index ix_expansion_wave on {SchemaName}.expansion (wave_id)");
+
         // --- splash: the audit trail, one row per attempt -----------------------------------------
         Execute.Sql($"""
             create table {SchemaName}.splash (
@@ -436,6 +455,8 @@ public sealed class M0001_Schema : Migration
 
                 delete from {SchemaName}.splash where wave_id = p_wave_id;
                 delete from {SchemaName}.ripple where wave_id = p_wave_id;
+                -- The expansion ledger only guards live ripples against re-expanding; with them gone it is dead weight.
+                delete from {SchemaName}.expansion where wave_id = p_wave_id;
                 update {SchemaName}.wave
                 set compacted_at = now(),
                     expire_at = case when p_retention is null then null else completed_at + p_retention end
@@ -483,6 +504,7 @@ public sealed class M0001_Schema : Migration
         Delete.Table("type_schedule").InSchema(SchemaName);
         Delete.Table("instance_heartbeat").InSchema(SchemaName);
         Delete.Table("splash").InSchema(SchemaName);
+        Delete.Table("expansion").InSchema(SchemaName);
         Delete.Table("ripple").InSchema(SchemaName);
         Delete.Table("wave").InSchema(SchemaName);
     }

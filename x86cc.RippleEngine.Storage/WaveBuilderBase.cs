@@ -30,12 +30,15 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     private readonly string? _waveType;
     private readonly string? _wavePayloadJson;
     private readonly Guid _waveId;
-    private readonly Guid? _parentRippleId;
-    private readonly bool _continueExisting;
+    private readonly RippleExpansion? _expansion;
     private readonly List<Spec> _specs = new();
 
+    // Continue mode is exactly "dispatching a running ripple's expansion".
+    private bool ContinueExisting => _expansion is not null;
+
+    /// <param name="expansion">Null to create a new wave; the running ripple's expansion to continue its wave.</param>
     protected WaveBuilderBase(RippleDataSource dataSource, TimeProvider time, string? name, string? waveType,
-        string? wavePayloadJson, Guid waveId, Guid? parentRippleId, bool continueExisting)
+        string? wavePayloadJson, Guid waveId, RippleExpansion? expansion)
     {
         _dataSource = dataSource;
         _time = time;
@@ -43,8 +46,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
         _waveType = waveType;
         _wavePayloadJson = wavePayloadJson;
         _waveId = waveId;
-        _parentRippleId = parentRippleId;
-        _continueExisting = continueExisting;
+        _expansion = expansion;
     }
 
     /// <summary>Accumulates one fan-out spec (called by the provider subclass from its AddRipples methods).</summary>
@@ -82,39 +84,70 @@ internal abstract class WaveBuilderBase : IWaveBuilder
 
     public async Task<Wave> DispatchAsync(CancellationToken ct = default)
     {
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
-        await using var tx = await conn.BeginTransactionAsync(ct);
-
-        long total = 0;
-        foreach (var spec in _specs)
+        try
         {
-            // Reuse the provider-built command (it carries the bound parameters DataSql references); a raw
-            // spec has no command, so we run a fresh one. The shared builder wraps the inner `data` SQL into
-            // the ripple.ripple INSERT…SELECT with the schedule_order/type_key stamping.
-            // Dispose in a finally REGARDLESS of origin: the provider-built commands (Marten's ToCommand(),
-            // EF's CreateDbCommand()) are ours to own once handed over and nothing reads them after this loop,
-            // so skipping them leaked a command + its parameter collection per spec per dispatch.
-            var cmd = spec.Command ?? new NpgsqlCommand();
-            try
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var tx = await conn.BeginTransactionAsync(ct);
+
+            // An in-flight expansion is made once (see ExpansionSql): if an earlier attempt of the expanding
+            // ripple already made this one, run none of the specs and hand back the wave as it stands.
+            if (_expansion is { } repeated && !await ExpansionSql.TryBeginAsync(conn, tx, _waveId, repeated, ct))
             {
-                cmd.Connection = conn;
-                cmd.Transaction = tx;
-                cmd.CommandText = WaveInsertSql.BuildInsertSelect(
-                    _waveId, _parentRippleId, _continueExisting, _waveType, spec.Discriminator, spec.DataSql);
-                total += await cmd.ExecuteNonQueryAsync(ct);
+                return await ReadWaveAsync(conn, tx, ct);
             }
-            finally
+
+            long total = 0;
+            foreach (var spec in _specs)
             {
-                await cmd.DisposeAsync();
+                // Reuse the provider-built command (it carries the bound parameters DataSql references); a raw
+                // spec has no command, so we run a fresh one. The shared builder wraps the inner `data` SQL into
+                // the ripple.ripple INSERT…SELECT with the schedule_order/type_key stamping.
+                var cmd = spec.Command ?? new NpgsqlCommand();
+                try
+                {
+                    cmd.Connection = conn;
+                    cmd.Transaction = tx;
+                    cmd.CommandText = WaveInsertSql.BuildInsertSelect(
+                        _waveId, _expansion?.ParentRippleId, ContinueExisting, _waveType, spec.Discriminator, spec.DataSql);
+                    total += await cmd.ExecuteNonQueryAsync(ct);
+                }
+                finally
+                {
+                    if (spec.Command is null)
+                    {
+                        await cmd.DisposeAsync();
+                    }
+                }
+            }
+
+            Wave wave;
+            if (_expansion is { } expansion)
+            {
+                wave = await ContinueWaveAsync(conn, tx, total, ct);
+                await ExpansionSql.CompleteAsync(conn, tx, _waveId, expansion, total, ct);
+            }
+            else
+            {
+                wave = await CreateWaveAsync(conn, tx, total, ct);
+            }
+
+            await tx.CommitAsync(ct);
+            return wave;
+        }
+        finally
+        {
+            // Dispose the provider-built commands on EVERY path, including the ones that never ran (a repeated
+            // expansion, an earlier spec throwing): Marten's ToCommand() and EF's CreateDbCommand() results are
+            // ours to own once handed over, and skipping them leaked a command + its parameter collection per
+            // spec per dispatch.
+            foreach (var spec in _specs)
+            {
+                if (spec.Command is { } command)
+                {
+                    await command.DisposeAsync();
+                }
             }
         }
-
-        var wave = _continueExisting
-            ? await ContinueWaveAsync(conn, tx, total, ct)
-            : await CreateWaveAsync(conn, tx, total, ct);
-
-        await tx.CommitAsync(ct);
-        return wave;
     }
 
     private async Task<Wave> CreateWaveAsync(NpgsqlConnection conn, NpgsqlTransaction tx, long total,
@@ -159,15 +192,16 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             $"update {S}.wave set ripple_count = ripple_count + @total where id = @waveId;",
             new { total, waveId = _waveId }, tx, cancellationToken: ct));
 
-        // The SHARED projection (WaveSql) — this used to be a divergent copy that omitted paused/retry_count and
-        // left `- w.paused` out of the succeeded derivation, so continuing a wave whose type was paused reported
-        // Paused = 0 and a Succeeded inflated by exactly the parked-ripple count.
-        var wave = await conn.QuerySingleOrDefaultAsync<Wave>(new CommandDefinition(
-                WaveSql.ById("@waveId"), new { waveId = _waveId }, tx, cancellationToken: ct))
-            ?? throw new InvalidOperationException($"Wave {_waveId} was not found");
-
-        return wave;
+        return await ReadWaveAsync(conn, tx, ct);
     }
+
+    // The SHARED projection (WaveSql) — this used to be a divergent copy that omitted paused/retry_count and
+    // left `- w.paused` out of the succeeded derivation, so continuing a wave whose type was paused reported
+    // Paused = 0 and a Succeeded inflated by exactly the parked-ripple count.
+    private async Task<Wave> ReadWaveAsync(NpgsqlConnection conn, NpgsqlTransaction tx, CancellationToken ct)
+        => await conn.QuerySingleOrDefaultAsync<Wave>(new CommandDefinition(
+               WaveSql.ById("@waveId"), new { waveId = _waveId }, tx, cancellationToken: ct))
+           ?? throw new InvalidOperationException($"Wave {_waveId} was not found");
 
     /// <summary>A provider's SQL builder may emit a trailing ';' that is illegal once the SELECT becomes a subquery.</summary>
     protected static string TrimInner(string sql) => sql.TrimEnd().TrimEnd(';').TrimEnd();

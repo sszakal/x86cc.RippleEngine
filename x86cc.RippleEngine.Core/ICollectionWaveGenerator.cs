@@ -32,8 +32,14 @@ public interface ICollectionWaveGenerator
     /// The wave id and parent ripple id are read from <paramref name="context"/> (a running handler's
     /// <see cref="IRippleContext"/>); the wave's <c>ripple_count</c> grows and it will not complete until the
     /// added ripples (and anything they in turn spawn) have settled.
+    /// <para>
+    /// <b>An expansion is made once.</b> If the ripple is retried after expanding (it failed, timed out, or its
+    /// instance died), the retry's dispatch of the same expansion adds nothing — the first attempt's ripples
+    /// stand. "The same expansion" is the n-th <c>Continue</c> of the attempt; a handler that does not make its
+    /// expansions in the same order every attempt names each one with <paramref name="expansionKey"/> instead.
+    /// </para>
     /// </summary>
-    ICollectionWaveBuilder Continue(IRippleContext context);
+    ICollectionWaveBuilder Continue(IRippleContext context, string? expansionKey = null);
 }
 
 /// <summary>Convenience helpers over <see cref="ICollectionWaveGenerator"/>.</summary>

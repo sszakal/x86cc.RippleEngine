@@ -10,17 +10,17 @@ internal sealed class EfWaveGenerator(RippleDataSource dataSource, TimeProvider 
 {
     public IWaveBuilder Create(DbContext context, string name)
         => new EfWaveBuilder(context, dataSource, time, name, waveType: null, wavePayloadJson: null,
-            Guid.NewGuid(), parentRippleId: null, continueExisting: false);
+            Guid.NewGuid(), expansion: null);
 
     public IWaveBuilder Create<TWave>(DbContext context, string name, TWave wavePayload)
         where TWave : notnull
         => new EfWaveBuilder(context, dataSource, time, name, RippleTypeName.Of<TWave>(),
             JsonSerializer.Serialize(wavePayload, typeof(TWave), RippleJson.Options),
-            Guid.NewGuid(), parentRippleId: null, continueExisting: false);
+            Guid.NewGuid(), expansion: null);
 
-    public IWaveBuilder Continue(DbContext context, IRippleContext rippleContext)
+    public IWaveBuilder Continue(DbContext context, IRippleContext rippleContext, string? expansionKey = null)
         => new EfWaveBuilder(context, dataSource, time, name: null, waveType: null, wavePayloadJson: null,
-            rippleContext.WaveId, rippleContext.RippleId, continueExisting: true);
+            rippleContext.WaveId, RippleExpansion.For(rippleContext, expansionKey));
 }
 
 public static class RippleEfGenerationExtensions

@@ -40,4 +40,12 @@ public interface IRippleContext
 
     /// <summary>Cancels when the execution timeout elapses or the host is shutting down.</summary>
     CancellationToken CancellationToken { get; }
+
+    /// <summary>
+    /// The 1-based ordinal of the next <c>Continue(context)</c> expansion in this attempt. Called by the wave
+    /// generators, not by handlers: it is how an expansion is recognised as the same one when the ripple is
+    /// retried, so that it is made once rather than once per attempt. A fake context for handler tests can
+    /// return an incrementing counter.
+    /// </summary>
+    int NextExpansionOrdinal();
 }
