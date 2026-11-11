@@ -78,9 +78,9 @@ public static class RippleHostingExtensions
                 new RippleStartupFilter(options.AutoMigrate, options.EnableDashboard));
         }
 
-        if (options.EnableMetrics)
+        if (options.EnableMetrics || options.EnableTracing)
         {
-            AddMetrics(builder);
+            AddTelemetry(builder, options.EnableMetrics, options.EnableTracing);
         }
 
         return services.AddRippleEngine(options.CopyEngineOptionsTo, options.EnableWorkers);
@@ -118,10 +118,18 @@ public static class RippleHostingExtensions
     /// standalone run does not spend a background exporter on a collector that isn't there, and a host that
     /// already configured its own exporters keeps them (both calls are additive).
     /// </summary>
-    private static void AddMetrics(IHostApplicationBuilder builder)
+    private static void AddTelemetry(IHostApplicationBuilder builder, bool metrics, bool tracing)
     {
-        var otel = builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics => metrics.AddMeter(RippleMetrics.MeterName));
+        var otel = builder.Services.AddOpenTelemetry();
+        if (metrics)
+        {
+            otel.WithMetrics(m => m.AddMeter(RippleMetrics.MeterName));
+        }
+
+        if (tracing)
+        {
+            otel.WithTracing(t => t.AddSource(RippleDiagnostics.ActivitySourceName));
+        }
 
         if (!string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
         {

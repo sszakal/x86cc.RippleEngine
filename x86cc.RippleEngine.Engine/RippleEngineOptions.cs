@@ -137,6 +137,10 @@ public class RippleEngineOptions
     /// </summary>
     public TimeSpan WaveStatsRefreshInterval { get; set; } = TimeSpan.FromSeconds(2);
 
+    /// <summary>How often each instance samples the queue for the <c>ripple.queue.depth</c> /
+    /// <c>ripple.queue.head_wait</c> gauges. Nothing is read while no metrics listener is attached.</summary>
+    public TimeSpan QueueMetricsInterval { get; set; } = TimeSpan.FromSeconds(15);
+
     /// <summary>How often <see cref="CompactionLoop"/> rolls finished waves' splashes into the aggregated report
     /// and reclaims their ripple/splash rows.</summary>
     public TimeSpan CompactionInterval { get; set; } = TimeSpan.FromSeconds(5);
@@ -191,6 +195,7 @@ public class RippleEngineOptions
         target.RecoveryInterval = RecoveryInterval;
         target.SelfReconcileGrace = SelfReconcileGrace;
         target.WaveStatsRefreshInterval = WaveStatsRefreshInterval;
+        target.QueueMetricsInterval = QueueMetricsInterval;
         target.CompactionInterval = CompactionInterval;
         target.CompactionMaxWavesPerPass = CompactionMaxWavesPerPass;
         target.ReportChunkSize = ReportChunkSize;

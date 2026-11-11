@@ -34,7 +34,7 @@ public sealed class SettlementPoisonTests : RippleTestBase
 
         var options = Options.Create(new RippleEngineOptions { InstanceId = "inst-1" });
         var inFlight = new InFlightTracker();
-        var settlement = new SettlementWriter(options, Splashes, inFlight, TimeProvider.System,
+        var settlement = new SettlementWriter(options, Splashes, inFlight, new RippleMetrics(), TimeProvider.System,
             NullLogger<SettlementWriter>.Instance);
         // The drain deadline bounds the test: a writer that retries the poisoned batch forever gives up here and
         // leaves every ripple Running, which the assertions below then report.

@@ -21,7 +21,16 @@ public readonly record struct ClaimedRipple(
     string? PayloadType,
     JsonDocument Payload,
     string? WavePayloadType,
-    JsonDocument? WavePayload);
+    JsonDocument? WavePayload,
+    string? WaveTraceParent = null);
+
+/// <summary>
+/// A sample of the queue for the <c>ripple.queue.*</c> gauges. <see cref="Depth"/> is the pending ripples across
+/// all active waves (from the waves' recomputed numbers, so up to one stats refresh stale).
+/// <see cref="HeadWaitSeconds"/> is how long the ripple that would be claimed NEXT has existed — the cluster's
+/// lag at the front of the queue; 0 when nothing is claimable.
+/// </summary>
+public readonly record struct QueueSnapshot(long Depth, double HeadWaitSeconds);
 
 /// <summary>
 /// The engine's coordination surface: creating waves and their ripples, the global FIFO claim, cluster
@@ -204,6 +213,10 @@ public interface IEngineStore
     /// </summary>
     Task<bool> TryRefreshWaveStatsAsync(CancellationToken ct = default);
 
+    /// <summary>Samples the queue's depth and head-of-queue wait (see <see cref="QueueSnapshot"/>) — two index
+    /// lookups, for the metrics loop.</summary>
+    Task<QueueSnapshot> GetQueueSnapshotAsync(CancellationToken ct = default);
+
     // ---- heartbeat ------------------------------------------------------------------------------
 
     /// <summary>
@@ -309,6 +322,10 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
     public async Task<bool> ExpandWaveAsync(Guid waveId, RippleExpansion expansion,
         IReadOnlyList<RippleSeed> ripples, CancellationToken ct = default)
     {
+        using var activity = RippleDiagnostics.Source.StartActivity("ripple.wave.expand");
+        activity?.SetTag("ripple.wave.id", waveId).SetTag("ripple.id", expansion.ParentRippleId)
+            .SetTag("ripple.expansion.key", expansion.Key).SetTag("ripple.count", ripples.Count);
+
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
@@ -316,6 +333,7 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         // size, and the query-source path can't know its size before it runs.
         if (!await ExpansionSql.TryBeginAsync(conn, tx, waveId, expansion, ct))
         {
+            activity?.SetTag("ripple.expansion.repeated", true);
             return false; // already made — by an earlier attempt of this ripple, or earlier in this one
         }
 
@@ -439,6 +457,9 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         wave.Status = count > 0 ? WaveStatus.Active : WaveStatus.Completed;
         wave.CompletedAt = count > 0 ? null : wave.CreatedAt;
 
+        using var activity = RippleDiagnostics.Source.StartActivity("ripple.wave.create", System.Diagnostics.ActivityKind.Producer);
+        activity?.SetTag("ripple.wave.id", wave.Id).SetTag("ripple.wave.type", wave.Type).SetTag("ripple.count", count);
+
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
@@ -446,6 +467,7 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         if (wave.IdempotencyKey is { } key
             && await WaveIdempotency.FindExistingAsync(conn, tx, key, ct) is { } existing)
         {
+            activity?.SetTag("ripple.wave.id", existing.Id).SetTag("ripple.wave.existing", true);
             return existing;
         }
 
@@ -453,13 +475,14 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         // fault can never strand a wave without its ripples.
         await conn.ExecuteAsync(new CommandDefinition(
             $"""
-             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key)
-             values (@Id, @Name, @Type, @Payload, @PayloadType, @Status, @RippleCount, @CreatedAt, @CompletedAt, @IdempotencyKey)
+             insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key, trace_parent)
+             values (@Id, @Name, @Type, @Payload, @PayloadType, @Status, @RippleCount, @CreatedAt, @CompletedAt, @IdempotencyKey, @TraceParent)
              """,
             new
             {
                 wave.Id, wave.Name, wave.Type, wave.Payload, wave.PayloadType,
-                Status = wave.Status.ToString(), wave.RippleCount, wave.CreatedAt, wave.CompletedAt, wave.IdempotencyKey
+                Status = wave.Status.ToString(), wave.RippleCount, wave.CreatedAt, wave.CompletedAt, wave.IdempotencyKey,
+                TraceParent = RippleDiagnostics.TraceParent(activity)
             },
             tx, cancellationToken: ct));
 
@@ -876,6 +899,28 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         }
     }
 
+    // Depth comes from the waves' own recomputed numbers (ix_wave_active), never a count over ripple — the
+    // honest pre-refresh view included, as in WaveSql. Head wait is the age of the ripple the claim would take
+    // next: the same eligibility as PollSql's (minus the per-instance handler filter), first row off
+    // ix_ripple_schedule_order. Like the claim, it walks past any backing-off rows parked at the left edge.
+    private const string QueueSnapshotSql = $"""
+        select
+            (select coalesce(sum(case when refreshed_at is null then ripple_count else pending end), 0)::bigint
+             from {S}.wave where status = 'Active') as depth,
+            coalesce((select extract(epoch from now() - head.created_at)::double precision
+                      from (select created_at from {S}.ripple
+                            where state = 'Pending' and (next_attempt_at is null or next_attempt_at <= now())
+                              and type_key <> all (select type_key from {S}.type_schedule where pause_state = 'paused')
+                            order by schedule_order
+                            limit 1) head), 0) as head_wait_seconds
+        """;
+
+    public async Task<QueueSnapshot> GetQueueSnapshotAsync(CancellationToken ct = default)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        return await conn.QuerySingleAsync<QueueSnapshot>(new CommandDefinition(QueueSnapshotSql, cancellationToken: ct));
+    }
+
     // ---- poll (heartbeat + claim, one round trip) -----------------------------------------------
 
     // One statement, one implicit transaction. The `beat` CTE upserts the heartbeat — a data-modifying CTE
@@ -923,7 +968,8 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         select c.id, c.wave_id, c.type_key, c.attempt,
                coalesce(ts.max_attempts, def.max_attempts) as max_attempts,
                c.payload, c.payload_type,
-               w.payload as wave_payload, w.payload_type as wave_payload_type
+               w.payload as wave_payload, w.payload_type as wave_payload_type,
+               w.trace_parent as wave_trace_parent
         from claimed c
         join {S}.wave w on w.id = c.wave_id
         left join {S}.type_schedule ts on ts.type_key = c.type_key

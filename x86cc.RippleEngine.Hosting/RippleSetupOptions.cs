@@ -54,12 +54,23 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
 
     /// <summary>
     /// Publishes the engine's metrics — <c>ripple.claimed</c> / <c>succeeded</c> / <c>failed</c> /
-    /// <c>duration</c> (tagged with <c>type_key</c>) and the per-instance <c>ripple.executing</c> gauge — by
+    /// <c>duration</c> (tagged with <c>type_key</c>), the per-instance <c>ripple.executing</c> gauge, the
+    /// intervention counters (<c>recovered</c>, <c>abandoned</c>, <c>released</c>, <c>settlement.*</c>) and the
+    /// cluster-wide <c>ripple.queue.depth</c> / <c>ripple.queue.head_wait</c> gauges — by
     /// adding <see cref="RippleMetrics.MeterName"/> to OpenTelemetry, and exporting over OTLP when
     /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is configured. Without that endpoint it only registers the meter, so
     /// a standalone run stays quiet and a host with its own exporter keeps it.
     /// </summary>
     public bool EnableMetrics { get; set; }
+
+    /// <summary>
+    /// Publishes the engine's traces — wave creation, in-flight expansion, and one span per ripple execution
+    /// linked back to the trace that created its wave (see <see cref="RippleDiagnostics"/>) — by adding
+    /// <see cref="RippleDiagnostics.ActivitySourceName"/> to OpenTelemetry, exported over OTLP under the same
+    /// rule as <see cref="EnableMetrics"/>. Set it on the creating host as well as the workers: the link exists
+    /// only if the wave was created under a trace. Executions are numerous — sample them.
+    /// </summary>
+    public bool EnableTracing { get; set; }
 
     /// <summary>
     /// The host's shutdown budget (<c>HostOptions.ShutdownTimeout</c>). Leave it null and it is derived from

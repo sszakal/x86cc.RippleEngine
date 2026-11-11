@@ -368,7 +368,25 @@ directly.
 `type_key`**, plus an `ripple.executing` gauge (per-instance in-flight). `RippleSetupOptions.EnableMetrics`
 wires it to OpenTelemetry (`AddMeter("x86cc.RippleEngine")`, plus the OTLP export when an endpoint is
 configured) for per-handler-type throughput/latency; the sample turns it on and the numbers land in the Aspire
-dashboard. The sample also exposes `GET /engine/types` — each type's configured `batch_size` / `gap_seconds`
+dashboard. Beyond throughput it counts the
+engine *intervening* — things that were previously visible only in logs: `ripple.recovered` (tagged `reason`:
+`dead_instance` / `self_stranded`), `ripple.abandoned`, `ripple.released`, `ripple.settlement.retries` and
+`ripple.settlement.rejected` — plus a `ripple.poll.duration` histogram. Two gauges describe the queue itself,
+cluster-wide: `ripple.queue.depth` (pending ripples across active waves, read from the waves' recomputed numbers)
+and `ripple.queue.head_wait` (the age of the ripple the next claim would take — the lag at the front of the
+queue). A gauge callback is synchronous, so `QueueMetricsLoop` samples them every `QueueMetricsInterval` (15s)
+and the gauges report the last sample; every instance reports the same series, and nothing is read while no one
+listens.
+
+**Tracing** (`RippleDiagnostics`, `RippleSetupOptions.EnableTracing`) uses an `ActivitySource` of the same name.
+`ripple.wave.create` is the fan-out, `ripple.wave.expand` an in-flight `Continue`, and `ripple.execute` one
+attempt of one ripple. An execution is a **root span linked** to the trace that created its wave, not a child of
+it: one event becomes up to millions of executions over hours, which as children would be a single trace no
+backend can hold, sampled all-or-nothing. The link target is the wave's `trace_parent` column — the W3C
+traceparent captured at creation (the engine's own create span, else the caller's ambient one) and returned by
+the claim. A handler's own work, including its expansion, nests under its execution span.
+
+The sample also exposes `GET /engine/types` — each type's configured `batch_size` / `gap_seconds`
 and its derived share — as the cross-process signal for its scheduler tests.
 
 ## 10. Lifecycle summary

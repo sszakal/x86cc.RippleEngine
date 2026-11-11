@@ -250,8 +250,14 @@ wave cannot complete until they settle.
   ```
 - **Metrics** — `o.EnableMetrics = true` publishes `ripple.claimed` / `succeeded` / `failed` / `duration` (all
   tagged with `type_key`) plus a per-instance `ripple.executing` gauge, and exports them over OTLP when
-  `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. A host with its own OpenTelemetry setup can instead add the
-  meter by name: `AddMeter("x86cc.RippleEngine")`.
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Also the engine's interventions (`ripple.recovered`,
+  `ripple.abandoned`, `ripple.released`, `ripple.settlement.retries` / `.rejected`), `ripple.poll.duration`, and
+  the cluster-wide queue gauges `ripple.queue.depth` and `ripple.queue.head_wait`. A host with its own
+  OpenTelemetry setup can instead add the meter by name: `AddMeter("x86cc.RippleEngine")`.
+- **Tracing** — `o.EnableTracing = true` (on the creating host *and* the workers) publishes a
+  `ripple.wave.create` span for the fan-out and a `ripple.execute` span per ripple attempt, each a root span
+  **linked** to the trace that created its wave. A host with its own setup adds the source by name:
+  `AddSource("x86cc.RippleEngine")`. Executions are numerous — sample them.
 
 ## Run the sample end-to-end
 

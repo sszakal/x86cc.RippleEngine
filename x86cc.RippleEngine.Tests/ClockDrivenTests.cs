@@ -635,7 +635,7 @@ public sealed class ClockDrivenTests
     }
 
     private SettlementWriter BuildSettlement(IOptions<RippleEngineOptions> options, InFlightTracker inFlight)
-        => new(options, _store, inFlight, _time, NullLogger<SettlementWriter>.Instance);
+        => new(options, _store, inFlight, new RippleMetrics(), _time, NullLogger<SettlementWriter>.Instance);
 
     private static PreparedRipple Ripple(int attempt, int maxAttempts)
         => new(Guid.NewGuid(), Guid.NewGuid(), attempt, maxAttempts, TypeKey, nameof(ClockRipple),

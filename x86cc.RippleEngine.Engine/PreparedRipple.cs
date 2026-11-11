@@ -24,7 +24,8 @@ internal sealed record PreparedRipple(
     string TypeKey,
     string? PayloadType,
     JsonDocument Payload,
-    JsonDocument? WavePayload) : IDisposable
+    JsonDocument? WavePayload,
+    string? WaveTraceParent = null) : IDisposable
 {
     public void Dispose()
     {

@@ -28,6 +28,8 @@ builder.AddRippleEngine(o =>
         o.EnableDashboard = true;
         // Exports ripple.claimed/succeeded/failed/duration; the OTLP endpoint Aspire injects picks them up.
         o.EnableMetrics = true;
+        // One span per ripple execution, linked to the request that created its wave (see the WebAPI).
+        o.EnableTracing = true;
         o.Retention<CorporateTaxChange>(TimeSpan.FromDays(90));
         o.Retention<EmployeeTaxChange>(TimeSpan.FromDays(90));
     })

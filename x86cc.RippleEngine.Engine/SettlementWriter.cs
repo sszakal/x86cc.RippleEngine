@@ -18,6 +18,7 @@ internal sealed class SettlementWriter(
     IOptions<RippleEngineOptions> options,
     ISplashStore splashStore,
     InFlightTracker inFlight,
+    RippleMetrics metrics,
     TimeProvider time,
     ILogger<SettlementWriter> logger)
 {
@@ -132,6 +133,7 @@ internal sealed class SettlementWriter(
                 logger.LogError(e,
                     "The outcome of ripple {RippleId} attempt {Attempt} was rejected by the database; settling it without its report",
                     rippleId, attempt);
+                metrics.SettlementRejected();
                 // If the row is refused even without its report, the report was not the cause: reportDropped
                 // sends that failure to the backoff below rather than back here.
                 await SettleAsync([withoutReport(batch[0], e.Message)], write, keyOf, withoutReport, reportDropped: true);
@@ -143,6 +145,7 @@ internal sealed class SettlementWriter(
                 // so a live instance's dropped settlement would leave executed ripples stuck Running
                 // forever. Retry with backoff until it lands.
                 logger.LogError(e, "Ripple settlement failed for {Count} row(s); retrying", batch.Count);
+                metrics.SettlementRetried();
                 try
                 {
                     // The DRAIN token, not the host's stop token. The host cancels its token BEFORE StopAsync

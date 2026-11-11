@@ -20,6 +20,8 @@ var connectionString = builder.Configuration.GetConnectionString("ripple")
 builder.AddRippleEngine(o =>
 {
     o.EnableWorkers = false;
+    // The fan-out span — and the trace context the workers' execution spans link back to.
+    o.EnableTracing = true;
     o.UseMartenFanOut();
 });
 builder.Services.AddSampleMarten(connectionString, applyChangesOnStartup: true);

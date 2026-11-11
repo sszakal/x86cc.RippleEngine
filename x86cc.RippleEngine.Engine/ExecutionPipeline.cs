@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -147,6 +148,7 @@ internal sealed class ExecutionPipeline(
 
     private async Task ExecuteAsync(PreparedRipple ripple)
     {
+        using var activity = StartExecuteActivity(ripple);
         var startedAt = time.GetUtcNow();
         // Linked to the DRAIN token, not the stop token — see _drainCts. ExecutionTimeout still bounds every
         // individual handler; shutdown only intervenes once the drain grace has run out.
@@ -174,6 +176,7 @@ internal sealed class ExecutionPipeline(
         Task<SplashReport?>? run = null;
         var abandoned = false;
         var released = false;
+        string? error = null;
         try
         {
             if (!registry.TryGet(ripple.TypeKey, out var prepare))
@@ -202,9 +205,10 @@ internal sealed class ExecutionPipeline(
             // ExecutionTimeout failed on its own account, whenever the process happened to stop.
             released = _drainCts.IsCancellationRequested && !deadlineCts.IsCancellationRequested
                        && ex is OperationCanceledException or HandlerAbandonedException;
+            error = Flatten(ex);
             report = released
                 ? SplashReportBuilder.Released(targetIds, "released: interrupted by shutdown; the attempt was not counted")
-                : SplashReportBuilder.Failed(targetIds, Flatten(ex));
+                : SplashReportBuilder.Failed(targetIds, error);
             failed = true;
         }
         finally
@@ -231,6 +235,12 @@ internal sealed class ExecutionPipeline(
         var endedAt = time.GetUtcNow();
         var elapsedMs = (endedAt - startedAt).TotalMilliseconds;
 
+        activity?.SetTag("ripple.outcome", !failed ? "succeeded" : released ? "released" : abandoned ? "abandoned" : "failed");
+        if (failed && !released)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, error);
+        }
+
         if (!failed)
         {
             settlement.Succeeded(new RippleCompletion(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report, endedAt));
@@ -241,6 +251,7 @@ internal sealed class ExecutionPipeline(
             // No retry decision to make and no failure to count: it simply goes back to the queue.
             settlement.Failed(new RippleFailure(ripple.RippleId, ripple.WaveId, ripple.Attempt, startedAt, report,
                 Terminal: false, NextAttemptAt: null, endedAt, Released: true));
+            metrics.Released(ripple.TypeKey);
         }
         else
         {
@@ -255,6 +266,34 @@ internal sealed class ExecutionPipeline(
         // NB: the in-flight slot is NOT released here — the ripple stays "owned" until its outcome is durably
         // written (SettlementWriter releases it on a successful write). This is what turns a settlement
         // backlog into claim back-pressure.
+    }
+
+    /// <summary>
+    /// Starts the span for one attempt (null when nothing is listening). A ROOT span carrying a link to the trace
+    /// that created the wave, not a child of it — see <see cref="RippleDiagnostics"/> for why. The handler runs
+    /// inside it, so whatever the handler does (its own database calls, a <c>Continue</c> expansion) nests under
+    /// this execution.
+    /// </summary>
+    private static Activity? StartExecuteActivity(PreparedRipple ripple)
+    {
+        if (!RippleDiagnostics.Source.HasListeners())
+        {
+            return null;
+        }
+
+        // Nothing ambient should be flowing into the execute block, but a root must not depend on that.
+        Activity.Current = null;
+        ActivityLink[]? links = ActivityContext.TryParse(ripple.WaveTraceParent, null, out var creator)
+            ? [new ActivityLink(creator)]
+            : null;
+        return RippleDiagnostics.Source.StartActivity("ripple.execute", ActivityKind.Consumer, default(ActivityContext),
+            [
+                new("ripple.wave.id", ripple.WaveId),
+                new("ripple.id", ripple.RippleId),
+                new("ripple.type_key", ripple.TypeKey),
+                new("ripple.attempt", ripple.Attempt)
+            ],
+            links);
     }
 
     /// <summary>

@@ -97,6 +97,19 @@ internal abstract class WaveBuilderBase : IWaveBuilder
 
     public async Task<Wave> DispatchAsync(CancellationToken ct = default)
     {
+        using var activity = ContinueExisting
+            ? RippleDiagnostics.Source.StartActivity("ripple.wave.expand")
+            : RippleDiagnostics.Source.StartActivity("ripple.wave.create", System.Diagnostics.ActivityKind.Producer);
+        activity?.SetTag("ripple.wave.id", _waveId);
+        if (_expansion is { } traced)
+        {
+            activity?.SetTag("ripple.id", traced.ParentRippleId).SetTag("ripple.expansion.key", traced.Key);
+        }
+        else
+        {
+            activity?.SetTag("ripple.wave.type", _waveType ?? "default");
+        }
+
         try
         {
             await using var conn = await _dataSource.OpenConnectionAsync(ct);
@@ -106,6 +119,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             // ripple already made this one, run none of the specs and hand back the wave as it stands.
             if (_expansion is { } repeated && !await ExpansionSql.TryBeginAsync(conn, tx, _waveId, repeated, ct))
             {
+                activity?.SetTag("ripple.expansion.repeated", true);
                 return await ReadWaveAsync(conn, tx, ct);
             }
 
@@ -114,6 +128,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             if (_idempotencyKey is { } key
                 && await WaveIdempotency.FindExistingAsync(conn, tx, key, ct) is { } existing)
             {
+                activity?.SetTag("ripple.wave.id", existing.Id).SetTag("ripple.wave.existing", true);
                 return existing;
             }
 
@@ -157,8 +172,10 @@ internal abstract class WaveBuilderBase : IWaveBuilder
             }
             else
             {
-                wave = await CreateWaveAsync(conn, tx, total, ct);
+                wave = await CreateWaveAsync(conn, tx, total, RippleDiagnostics.TraceParent(activity), ct);
             }
+
+            activity?.SetTag("ripple.count", total);
 
             await tx.CommitAsync(ct);
             return wave;
@@ -180,7 +197,7 @@ internal abstract class WaveBuilderBase : IWaveBuilder
     }
 
     private async Task<Wave> CreateWaveAsync(NpgsqlConnection conn, NpgsqlTransaction tx, long total,
-        CancellationToken ct)
+        string? traceParent, CancellationToken ct)
     {
         var createdAt = _time.GetUtcNow();
         // Born-complete: a fan-out whose source matched zero rows is a job with nothing to do — persist it
@@ -203,13 +220,14 @@ internal abstract class WaveBuilderBase : IWaveBuilder
         // The wave row keeps ripple_count; there are no counters to seed — the wave's live numbers are
         // recomputed from the ripples themselves by refresh_wave_stats().
         await conn.ExecuteAsync(new CommandDefinition(
-            $"insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key) " +
-            "values (@id, @name, @type, @payload::jsonb, @payloadType, @status, @rippleCount, @createdAt, @completedAt, @idempotencyKey);",
+            $"insert into {S}.wave (id, name, type, payload, payload_type, status, ripple_count, created_at, completed_at, idempotency_key, trace_parent) " +
+            "values (@id, @name, @type, @payload::jsonb, @payloadType, @status, @rippleCount, @createdAt, @completedAt, @idempotencyKey, @traceParent);",
             new
             {
                 id = wave.Id, name = wave.Name, type = wave.Type, payload = _wavePayloadJson,
                 payloadType = _waveType, status = wave.Status.ToString(), rippleCount = wave.RippleCount,
-                createdAt = wave.CreatedAt, completedAt = wave.CompletedAt, idempotencyKey = _idempotencyKey
+                createdAt = wave.CreatedAt, completedAt = wave.CompletedAt, idempotencyKey = _idempotencyKey,
+                traceParent
             }, tx, cancellationToken: ct));
 
         return wave;

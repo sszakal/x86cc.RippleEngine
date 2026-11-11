@@ -94,6 +94,8 @@ sibling packages over the same Core abstractions:
   wave create/continue; a provider subclass only builds each spec's inner `data` SQL). **`ScheduleOrderSql`**
   holds the subtle `schedule_order` stamping (base-clamp + per-type batch/gap) in **one place**, shared by both
   the unnest insert (`EngineStore.AddRipplesAsync`) and the `INSERT … SELECT` (`WaveInsertSql`).
+  `RippleDiagnostics` (the tracing `ActivitySource`: create/expand spans here, `ripple.execute` in the pipeline —
+  a root span *linked* to the wave's stored `trace_parent`, never a child of the fan-out),
   `RippleTypeKey`, `RippleOptions`, `RippleDataSource`, `IRippleFeatures` (the hook the optional packages hang
   their `o.Use…()` extensions off, kept down here so a provider never has to reference Hosting),
   `Migrations/M0001_Schema` (the whole schema — one migration while the DB is ephemeral). `AddRippleStorage` is
@@ -102,7 +104,8 @@ sibling packages over the same Core abstractions:
   `ExecutionPipeline` (TPL `ActionBlock` + the shutdown drain; it delegates attempt ownership to `InFlightTracker`,
   the retry decision to `IRetryPolicy`/`ExponentialRetryPolicy`, and batched, retried splash writes to
   `SettlementWriter`), `RecoveryLoop`, `WaveStatsRefreshLoop`, `RippleHandlerRegistry`,
-  `RippleContext` (the internal `IRippleContext` impl), `RippleEngineOptions`, `RippleMetrics`, `ScheduleSeeder`,
+  `RippleContext` (the internal `IRippleContext` impl), `RippleEngineOptions`, `RippleMetrics` (+ `QueueMetricsLoop`,
+  which samples the queue gauges), `ScheduleSeeder`,
   `RippleEngineExtensions` — whose `AddRippleEngine(IServiceCollection, …)` is **internal** (visible to Hosting);
   the public surface here is `IRippleEngineBuilder.AddHandler<TWave,TRipple,THandler>()`. Depends on Core + Storage.
 - **`x86cc.RippleEngine.MartenDb`** — the Marten-source fan-out provider: `IMartenWaveGenerator`

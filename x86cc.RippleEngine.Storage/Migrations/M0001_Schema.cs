@@ -60,7 +60,10 @@ public sealed class M0001_Schema : Migration
                 expire_at     timestamptz null,
                 avg_duration_ms     bigint null,
                 splash_sample_count bigint not null default 0,
-                idempotency_key     text   null
+                idempotency_key     text   null,
+                -- The W3C traceparent of whatever created the wave, handed to the worker on the claim so each
+                -- execution can LINK back to the trace that caused it (see RippleDiagnostics). Null = untraced.
+                trace_parent        text   null
             )
             """);
         // A wave created under a caller-supplied key (WithIdempotencyKey) is created once: a repeat of the create

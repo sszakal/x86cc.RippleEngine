@@ -80,6 +80,8 @@ public static class RippleEngineExtensions
             $"{nameof(RippleEngineOptions.PauseReconcileMaxRowsPerPass)} must be > 0");
         optionsBuilder.Validate(o => o.ExecutionTimeout > TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.ExecutionTimeout)} must be positive");
+        optionsBuilder.Validate(o => o.QueueMetricsInterval > TimeSpan.Zero,
+            $"{nameof(RippleEngineOptions.QueueMetricsInterval)} must be positive");
         optionsBuilder.Validate(o => o.HandlerCancellationGrace >= TimeSpan.Zero,
             $"{nameof(RippleEngineOptions.HandlerCancellationGrace)} must not be negative");
         optionsBuilder.Validate(o => o.DispatchErrorDelay > TimeSpan.Zero,
@@ -118,6 +120,8 @@ public static class RippleEngineExtensions
             services.AddHostedService<CompactionLoop>();
             // Reconciles ripple states toward each type's desired pause_state (async, chunked pause/resume).
             services.AddHostedService<PauseTransitionLoop>();
+            // Samples the queue for the ripple.queue.* gauges (a no-op while nothing listens to them).
+            services.AddHostedService<QueueMetricsLoop>();
         }
 
         return new RippleEngineBuilder(services, registry);

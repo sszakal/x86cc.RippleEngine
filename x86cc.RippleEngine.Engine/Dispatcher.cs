@@ -263,8 +263,10 @@ internal sealed class Dispatcher(
 
     private async Task<int> PollAndDispatchAsync(int limit, CancellationToken ct)
     {
+        var pollStarted = time.GetTimestamp();
         var claimed = await WithDeadlineAsync("poll",
             token => engineStore.PollAsync(limit, _options.InstanceId, pipeline.ExecutingCount, _handledTypes, token), ct);
+        metrics.Polled(time.GetElapsedTime(pollStarted).TotalMilliseconds);
         // A poll claims in schedule_order order, so the batch can span several types — attribute per type_key.
         foreach (var group in claimed.GroupBy(c => c.TypeKey))
         {
@@ -275,7 +277,7 @@ internal sealed class Dispatcher(
         for (var i = 0; i < claimed.Count; i++)
         {
             var r = claimed[i];
-            var prepared = new PreparedRipple(r.Id, r.WaveId, r.Attempt, r.MaxAttempts, r.TypeKey, r.PayloadType, r.Payload, r.WavePayload);
+            var prepared = new PreparedRipple(r.Id, r.WaveId, r.Attempt, r.MaxAttempts, r.TypeKey, r.PayloadType, r.Payload, r.WavePayload, r.WaveTraceParent);
             // Ownership of the payload documents passes to the pipeline, which disposes them after execution.
             if (pipeline.Post(prepared))
             {

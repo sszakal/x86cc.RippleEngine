@@ -18,6 +18,7 @@ namespace x86cc.RippleEngine.Engine;
 internal sealed class RecoveryLoop(
     IEngineStore engine,
     InFlightTracker inFlight,
+    RippleMetrics metrics,
     IOptions<RippleEngineOptions> options,
     TimeProvider time,
     ILogger<RecoveryLoop> logger)
@@ -32,6 +33,7 @@ internal sealed class RecoveryLoop(
         // Detect stale instances (excluding self) and requeue their orphans.
         var requeued = await engine.RecoverStaleAsync(
             _options.HeartbeatTimeout, _options.InstanceId, stoppingToken);
+        metrics.Recovered(requeued, "dead_instance");
         if (requeued > 0)
         {
             Logger.LogWarning("Recovered {Count} ripple(s) from dead instance(s)", requeued);
@@ -41,6 +43,7 @@ internal sealed class RecoveryLoop(
         // window), gated on the live in-flight set so genuinely-executing (or still-settling) ripples are kept.
         var reclaimed = await engine.RecoverSelfStrandedAsync(
             _options.InstanceId, inFlight.RippleIds, _options.SelfReconcileGrace, stoppingToken);
+        metrics.Recovered(reclaimed, "self_stranded");
         if (reclaimed > 0)
         {
             Logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);
