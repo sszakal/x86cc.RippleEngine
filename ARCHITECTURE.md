@@ -160,7 +160,11 @@ seconds, the monotonic anchor. No interval/timestamp math, just numbers.)
 
 - `batch_size` consecutive ripples share one slot; each slot is `gap_seconds` after the last.
 - **Continuation appends.** New work for a job with pending ripples bases off that pending tail, so it queues
-  *after* it (FIFO within a job).
+  *after* it (FIFO within a job). The tail read only sees committed rows, so fan-outs appending to one wave are
+  **serialised per wave + ripple type** (`ScheduleOrderSql.LockWaveTailsAsync`, a transaction-scoped advisory
+  lock taken before the insert): otherwise N handlers expanding the same wave at once would all read the same
+  tail and stack their children on the same slots, running the wave at N× its configured share. The price is
+  that same-type expansions of one wave insert one at a time.
 - **A new/drained job starts at the global frontier**, not wall-clock `now()`. The frontier is
   `min(schedule_order)` over all pending — the left edge of `ix_ripple_schedule_order`, the slot being consumed right
   now — clamped up to `now()` (a fully idle system, no pending, falls back to `now()`). This is the crucial

@@ -354,6 +354,10 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
 
         var wavePayloadType = waveRows[0];
 
+        // Appending to an existing wave: queue behind any other fan-out appending to the same tail right now,
+        // so this one reads that one's rows instead of stamping the same slots (see LockWaveTailsAsync).
+        await ScheduleOrderSql.LockWaveTailsAsync(conn, tx, waveId, ripples.Select(r => r.PayloadType), ct);
+
         // Parallel column arrays fed to a single set-based INSERT. `ord` preserves caller order so the batch
         // numbering below is deterministic.
         var ids = new Guid[ripples.Count];

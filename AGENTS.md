@@ -254,7 +254,9 @@ a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a sy
   first attempt wins), and is fenced on the parent still being `Running` on the expanding attempt
   (`ExpansionSql`, shared by both insert paths). The key defaults to the `Continue` call's ordinal within the
   attempt; a handler whose expansion order varies passes `Continue(context, expansionKey)`. Any new insert path
-  for in-flight expansion must go through `ExpansionSql.TryBeginAsync`/`CompleteAsync`.
+  for in-flight expansion must go through `ExpansionSql.TryBeginAsync`/`CompleteAsync`, and any insert into an
+  existing wave must first take `ScheduleOrderSql.LockWaveTailsAsync` (concurrent appends otherwise read the
+  same uncommitted-blind tail and stack on the same `schedule_order` slots).
 - Wave creation is not atomic with the caller's business transaction (it runs on the engine's connection). The
   supported answer is `builder.WithIdempotencyKey(key)` — one wave per key, a repeat returns it (`WaveIdempotency`,
   checked before the fan-out) — so the caller can safely retry a create.

@@ -117,6 +117,14 @@ internal abstract class WaveBuilderBase : IWaveBuilder
                 return existing;
             }
 
+            // An expansion appends to an existing wave: queue behind any other fan-out appending to the same
+            // tails right now, so its specs read that one's rows instead of stamping the same slots. All of this
+            // dispatch's types are locked up front (in sorted order), not spec by spec — see LockWaveTailsAsync.
+            if (ContinueExisting)
+            {
+                await ScheduleOrderSql.LockWaveTailsAsync(conn, tx, _waveId, _specs.Select(s => s.Discriminator), ct);
+            }
+
             long total = 0;
             foreach (var spec in _specs)
             {

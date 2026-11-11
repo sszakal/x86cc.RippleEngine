@@ -168,6 +168,50 @@ public sealed class ExpansionIdempotencyTests : RippleTestBase
         (await ChildrenAsync(root.Id)).ShouldBe(4);
     }
 
+    /// <summary>
+    /// Expansions of ONE wave running at the same time must queue their children one after another, not on top of
+    /// each other. Each appends after the wave's pending tail for that type — but a concurrent expansion's rows
+    /// are uncommitted and so invisible, and they all used to read the same tail and stamp the same slots: with
+    /// N handlers expanding in parallel the wave ran at N times its configured batch/gap share.
+    /// </summary>
+    [Fact]
+    public async Task concurrent_expansions_of_one_wave_do_not_stack_on_the_same_slots()
+    {
+        await ResetAsync();
+        const int parents = 12, childrenEach = 5;
+        // One child per slot, so every child of the wave must end up with its own schedule_order.
+        await SeedScheduleAsync(RippleTypeKey.Compose(nameof(RecalcContext), nameof(CompanyTax)), batchSize: 1, gapSeconds: 10);
+
+        var wave = await CollectionGenerator
+            .Create("group recalc", new RecalcContext { LegislationCode = "VAT26" })
+            .AddRipples(Enumerable.Range(0, parents).Select(_ => new RecalcCompany { CompanyId = Guid.NewGuid() }))
+            .DispatchAsync();
+        var roots = await Engine.PollAsync(parents, "inst-1", 0);
+        roots.Count.ShouldBe(parents);
+
+        await Task.WhenAll(roots.Select(root => Task.Run(() => CollectionGenerator
+            .Continue(new StubRippleContext(wave.Id, root.Id))
+            .AddRipples(Members(childrenEach))
+            .DispatchAsync())));
+
+        (await ScalarAsync("select count(*) from ripple.ripple where parent_ripple_id is not null"))
+            .ShouldBe(parents * childrenEach);
+        // 60 children, one per slot, 10 apart ⇒ queued end to end they span 59 gaps. Stacked, the twelve
+        // expansions would each cover the same ~4 gaps (their bases differing only by the microseconds between
+        // their transactions), so the span — not the count of distinct values — is what tells the two apart.
+        (await DoubleAsync(
+            "select max(schedule_order) - min(schedule_order) from ripple.ripple where parent_ripple_id is not null"))
+            .ShouldBeGreaterThanOrEqualTo((parents * childrenEach - 1) * 10d - 0.001);
+        // ...and no two children share a slot: consecutive positions are a full gap apart.
+        (await DoubleAsync(
+            """
+            select min(d) from (
+                select schedule_order - lag(schedule_order) over (order by schedule_order) as d
+                from ripple.ripple where parent_ripple_id is not null) g
+            where d is not null
+            """)).ShouldBeGreaterThanOrEqualTo(10d - 0.001);
+    }
+
     /// <summary>The ledger only protects live ripples, so it goes when its wave is compacted.</summary>
     [Fact]
     public async Task compaction_removes_the_waves_expansion_ledger()

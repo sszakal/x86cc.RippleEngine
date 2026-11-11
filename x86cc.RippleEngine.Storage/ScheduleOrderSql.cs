@@ -1,3 +1,5 @@
+using Dapper;
+using Npgsql;
 using x86cc.RippleEngine.Storage.Migrations;
 
 namespace x86cc.RippleEngine.Storage;
@@ -20,6 +22,47 @@ namespace x86cc.RippleEngine.Storage;
 internal static class ScheduleOrderSql
 {
     private const string S = M0001_Schema.SchemaName;
+
+    // The two-int advisory-lock form, its own lock space beside WaveIdempotency's (0x7270) and clear of the
+    // engine's fixed single-bigint keys.
+    private const int TailLockClass = 0x7271;
+
+    /// <summary>
+    /// Serialises the fan-outs that <b>append to one wave's tail</b> for the given ripple types, for the rest of
+    /// the transaction. Call it before any insert into an EXISTING wave (an in-flight expansion); a new wave has
+    /// no tail to share and needs no lock.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BaseExpr"/> appends new work after the wave's pending tail for its type — but it can only see
+    /// COMMITTED rows. Expansions of one wave that run at the same time (a wave of group ripples, each handler
+    /// calling <c>Continue</c>, is exactly that) all read the same tail, compute the same base, and stamp their
+    /// children onto the same slots: with N of them in flight the wave ran at N times its configured
+    /// <c>batch_size / gap_seconds</c> share, the fairness knob silently multiplied by the cluster's concurrency.
+    /// Holding this lock from before the insert until commit makes each expansion see the previous one's rows,
+    /// so they queue end to end.
+    /// <para>
+    /// It must be its own statement, ahead of the insert: under READ COMMITTED a statement's snapshot is taken
+    /// when it starts, so a lock taken inside the insert would still read the tail as it was before the wait.
+    /// Keyed on wave + ripple type (the scheduling unit; the wave half of the <c>type_key</c> is fixed per wave),
+    /// so different types — and different waves — never wait on each other. Types are locked in sorted order, so
+    /// two expansions that mix the same types cannot deadlock.
+    /// </para>
+    /// <para>
+    /// The cost is the point: same-type expansions of one wave now run one at a time for the length of their
+    /// insert. That is the throughput the configured share asks for.
+    /// </para>
+    /// </remarks>
+    /// <param name="ripplePayloadTypes">The ripple half of each <c>type_key</c> about to be inserted.</param>
+    public static async Task LockWaveTailsAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Guid waveId,
+        IEnumerable<string?> ripplePayloadTypes, CancellationToken ct)
+    {
+        foreach (var type in ripplePayloadTypes.Select(t => t ?? "").Distinct().Order(StringComparer.Ordinal))
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "select pg_advisory_xact_lock(@lockClass, hashtext(@key))",
+                new { lockClass = TailLockClass, key = $"{waveId:N}|{type}" }, tx, cancellationToken: ct));
+        }
+    }
 
     /// <summary>
     /// The base (the epoch-seconds slot the first batch lands on): if the wave still has pending work, append
