@@ -71,8 +71,11 @@ public sealed class WaveGeneratorTests : RippleTestBase
         var impacted = await SeedCompaniesAsync(store, country: "DE", count: 7);
 
         await using var session = store.QuerySession();
-        var wave = await MartenGenerator
-            .Create(session, "migrate", new RecalcContext { LegislationCode = "MIG" })
+        var builder = MartenGenerator.Create(session, "migrate", new RecalcContext { LegislationCode = "MIG" });
+        Should.Throw<ArgumentOutOfRangeException>(() => builder.AddRipplesBatched<Company, RecalcBatch, Guid>(
+            c => c.Country == "DE", c => c.Id, b => b.CompanyIds, batchSize: 0));
+
+        var wave = await builder
             .AddRipplesBatched<Company, RecalcBatch, Guid>(
                 c => c.Country == "DE",
                 c => c.Id,
@@ -92,6 +95,45 @@ public sealed class WaveGeneratorTests : RippleTestBase
             .SelectMany(r => r.Payload.RootElement.Deserialize<RecalcBatch>(Web)!.CompanyIds)
             .ToHashSet();
         all.SetEquals(impacted).ShouldBeTrue();
+    }
+
+    /// <summary>The raw-SQL escape hatch: the caller's SQL yields one jsonb payload per row, and the framework wraps
+    /// it in the same INSERT…SELECT (type_key + payload_type stamped from <c>TBatch</c>). It mixes with LINQ specs in
+    /// one dispatch — a raw spec has no provider-built command, so dispatch runs and disposes one of its own.</summary>
+    [Fact]
+    public async Task raw_sql_specs_fan_out_alongside_linq_specs_in_one_dispatch()
+    {
+        await ResetAsync();
+        await using var store = BuildMartenStore();
+        var linqTargets = await SeedCompaniesAsync(store, country: "NL", count: 2);
+        Guid[] first = [Guid.NewGuid(), Guid.NewGuid()];
+        Guid second = Guid.NewGuid();
+
+        await using var session = store.QuerySession();
+        var builder = MartenGenerator.Create(session, "raw", new RecalcContext { LegislationCode = "RAW" });
+        Should.Throw<ArgumentException>(() => builder.AddRipplesRaw<RecalcBatch>("  "));
+
+        var wave = await builder
+            .AddRipples<Company, RecalcCompany>(c => c.Country == "NL", c => new RecalcCompany { CompanyId = c.Id })
+            .AddRipplesRaw<RecalcBatch>($"""
+                select jsonb_build_object('CompanyIds', jsonb_build_array('{first[0]}', '{first[1]}'))
+                union all
+                select jsonb_build_object('CompanyIds', jsonb_build_array('{second}'))
+                """)
+            .DispatchAsync();
+
+        wave.RippleCount.ShouldBe(4); // 2 LINQ + 2 raw
+        (await ScalarAsync("select count(*) from ripple.ripple where type_key = 'RecalcContext|RecalcBatch'")).ShouldBe(2);
+        (await ScalarAsync("select count(*) from ripple.ripple where type_key = 'RecalcContext|RecalcCompany'")).ShouldBe(2);
+
+        var claimed = await Engine.PollAsync(100, "t", 0);
+        claimed.Where(r => r.PayloadType == nameof(RecalcBatch))
+            .Select(r => r.Payload.RootElement.Deserialize<RecalcBatch>(Web)!.CompanyIds.OrderBy(g => g).ToArray())
+            .OrderBy(b => b.Length)
+            .ShouldBe([[second], first.OrderBy(g => g).ToArray()]);
+        claimed.Where(r => r.PayloadType == nameof(RecalcCompany))
+            .Select(r => r.Payload.RootElement.Deserialize<RecalcCompany>(Web)!.CompanyId)
+            .ToHashSet().SetEquals(linqTargets).ShouldBeTrue();
     }
 
     // Marten store over the same database, in its own schema so the document tables never collide with the

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -377,6 +378,36 @@ public sealed class ClockDrivenTests
         inFlight.RippleIds.ShouldBe([rippleId]);
     }
 
+    /// <summary>A ripple whose type_key this instance has no handler for (the claim filters on handled types, so
+    /// only a registry/claim mismatch gets one here) fails its ATTEMPT — retried like any failure, the reason in the
+    /// report — rather than throwing out of the block action, which would fault the whole execute block.</summary>
+    [Fact]
+    public async Task a_ripple_with_no_registered_handler_fails_its_attempt_not_the_block()
+    {
+        var pipeline = BuildPipeline();
+        const string unknown = "Nope|Nothing";
+
+        pipeline.Post(new PreparedRipple(Guid.NewGuid(), Guid.NewGuid(), 1, 3, unknown, "Nothing",
+            JsonDocument.Parse("{}"), JsonDocument.Parse("{}"))).ShouldBeTrue();
+
+        var failure = await SingleAsync(_store.Failed);
+        failure.Terminal.ShouldBeFalse("an ordinary failed attempt, retried under the policy");
+        using (var report = JsonDocument.Parse(failure.Report.ShouldNotBeNull()))
+        {
+            var item = report.RootElement.EnumerateArray().ShouldHaveSingleItem();
+            item.GetProperty("outcome").GetString().ShouldBe("Failed");
+            item.GetProperty("output").GetString().ShouldNotBeNull().ShouldContain($"No handler registered for type key '{unknown}'");
+        }
+
+        pipeline.IsFaulted.ShouldBeFalse();
+
+        // The block is still serving: a known ripple runs to success afterwards.
+        pipeline.Post(Ripple(attempt: 1, maxAttempts: 3)).ShouldBeTrue();
+        await SingleAsync(_store.Completed);
+
+        await StopAsync(pipeline);
+    }
+
     /// <summary>The pipeline is one-shot. A second Start used to replace the execute block (orphaning whatever was
     /// queued in the first) and start a second pair of flush loops; use before Start was a NullReferenceException.</summary>
     [Fact]
@@ -568,6 +599,206 @@ public sealed class ClockDrivenTests
         await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>A faulted execute block can never run anything again, but the process is still alive and
+    /// heartbeating — so nothing would ever recover the work it holds. The dispatcher must fail fast: release this
+    /// instance's claims (keeping none, with no grace) so peers re-run them at once, then stop the host so the
+    /// orchestrator restarts it with a fresh block. A release that fails must not stop the shutdown; recovery
+    /// then falls back to the heartbeat timeout.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task a_faulted_execute_block_releases_this_instances_claims_and_stops_the_host(bool releaseFails)
+    {
+        var options = new RippleEngineOptions { InstanceId = "clock-test", MaxConcurrency = 1 };
+        _probe.Behaviour = (_, _) => throw new InvalidOperationException("handler failed");
+        var pipeline = BuildPipeline(start: false, retryPolicy: new ThrowingRetryPolicy());
+
+        var polls = 0;
+        var store = ScriptedEngineStore.Create(_time, method => method switch
+        {
+            "PollAsync" => Task.FromResult<IReadOnlyList<ClaimedRipple>>(
+                Interlocked.Increment(ref polls) == 1 ? [Claimed()] : []),
+            "RecoverSelfStrandedAsync" => releaseFails
+                ? Task.FromException<int>(new InvalidOperationException("database is down"))
+                : Task.FromResult(1),
+            "RemoveInstanceAsync" => Task.FromResult(true),
+            _ => Task.CompletedTask
+        });
+        var lifetime = new RecordingLifetime();
+        using var dispatcher = BuildDispatcher(Options.Create(options), store, pipeline, lifetime);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+
+        // The loop returns ON ITS OWN — nobody calls StopAsync. Nudge the clock past the poll backoff meanwhile.
+        await WaitUntilAsync(() =>
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(100));
+            return dispatcher.ExecuteTask!.IsCompleted;
+        });
+        await dispatcher.ExecuteTask!; // returned, did not throw
+
+        pipeline.IsFaulted.ShouldBeTrue();
+        pipeline.FaultException.ShouldBeOfType<AggregateException>().Flatten().InnerExceptions
+            .ShouldContain(e => e.Message == ThrowingRetryPolicy.Message);
+
+        store.Calls("RecoverSelfStrandedAsync").ShouldBe(1);
+        var release = store.LastArgs("RecoverSelfStrandedAsync");
+        release[0].ShouldBe("clock-test");
+        release[1].ShouldBeAssignableTo<IReadOnlyCollection<Guid>>()!.ShouldBeEmpty("a faulted block keeps nothing");
+        release[2].ShouldBe(TimeSpan.Zero);
+
+        lifetime.StopRequests.ShouldBe(1);
+        store.Calls("RemoveInstanceAsync").ShouldBe(1, "the shutdown path still runs after a fail-fast return");
+    }
+
+    /// <summary>The block can fault while a poll is in flight; everything that poll claimed is then refused. The
+    /// rows stay Running for recovery, but their pooled payload buffers are returned here — the refused one and
+    /// every ripple after it — and the refused attempt leaves the in-flight set, or self-recovery would treat this
+    /// instance as its live owner. The next cycle then fails fast.</summary>
+    [Fact]
+    public async Task ripples_refused_by_a_block_that_faulted_mid_claim_return_their_buffers()
+    {
+        void Configure(RippleEngineOptions o)
+        {
+            o.MaxConcurrency = 1;
+            o.PrefetchFactor = 4;
+            // A StoreCallDeadline far beyond the clock nudges below, so the scripted poll is never abandoned.
+            o.HeartbeatTimeout = TimeSpan.FromHours(1);
+        }
+
+        var options = new RippleEngineOptions { InstanceId = "clock-test" };
+        Configure(options);
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _probe.Behaviour = async (_, _) =>
+        {
+            await gate.Task;
+            throw new InvalidOperationException("handler failed");
+        };
+        var pipeline = BuildPipeline(Configure, start: false, retryPolicy: new ThrowingRetryPolicy());
+
+        ClaimedRipple[] refused = [Claimed(), Claimed(), Claimed()];
+        var polls = 0;
+        var store = ScriptedEngineStore.Create(_time, method => method switch
+        {
+            "PollAsync" => Interlocked.Increment(ref polls) switch
+            {
+                1 => Task.FromResult<IReadOnlyList<ClaimedRipple>>([Claimed()]),
+                2 => FaultThenClaimAsync(),
+                _ => Task.FromResult<IReadOnlyList<ClaimedRipple>>([])
+            },
+            "RecoverSelfStrandedAsync" => Task.FromResult(0),
+            "RemoveInstanceAsync" => Task.FromResult(true),
+            _ => Task.CompletedTask
+        });
+        var lifetime = new RecordingLifetime();
+        using var dispatcher = BuildDispatcher(Options.Create(options), store, pipeline, lifetime);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() =>
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(100));
+            return dispatcher.ExecuteTask!.IsCompleted;
+        });
+        await dispatcher.ExecuteTask!;
+
+        polls.ShouldBe(2, "the cycle after the refused claim fails fast instead of polling again");
+        foreach (var r in refused)
+        {
+            Should.Throw<ObjectDisposedException>(() => r.Payload.RootElement.ValueKind);
+            Should.Throw<ObjectDisposedException>(() => r.WavePayload!.RootElement.ValueKind);
+        }
+
+        pipeline.ExecutingCount.ShouldBe(1, "only the ripple the block accepted is still owned");
+        lifetime.StopRequests.ShouldBe(1);
+
+        // Poll 2's top-of-loop fault check has already passed (the first ripple is parked on the gate), so the
+        // block faults while this claim is "in flight" — exactly the window the refusal path exists for.
+        async Task<IReadOnlyList<ClaimedRipple>> FaultThenClaimAsync()
+        {
+            gate.SetResult(); // the first ripple fails → the retry policy throws → the block faults
+            await WaitUntilAsync(() => pipeline.IsFaulted);
+            return refused;
+        }
+    }
+
+    /// <summary>The recovery loop's wiring, which the storage tests (calling the store directly) never exercise:
+    /// every <see cref="RippleEngineOptions.RecoveryInterval"/> it reclaims dead peers' work (excluding itself, past
+    /// HeartbeatTimeout) and then its own stranded claims — keeping exactly the attempts the pipeline owns AT THAT
+    /// TICK, past SelfReconcileGrace — and counts what each sweep recovered, by reason.</summary>
+    [Fact]
+    public async Task the_recovery_loop_sweeps_dead_peers_then_its_own_strays_each_interval()
+    {
+        var options = new RippleEngineOptions
+        {
+            InstanceId = "clock-test",
+            RecoveryInterval = TimeSpan.FromSeconds(10),
+            HeartbeatTimeout = TimeSpan.FromSeconds(20),
+            SelfReconcileGrace = TimeSpan.FromSeconds(45)
+        };
+        var store = ScriptedEngineStore.Create(_time, method => method switch
+        {
+            "RecoverStaleAsync" => Task.FromResult(2),
+            "RecoverSelfStrandedAsync" => Task.FromResult(1),
+            _ => throw new InvalidOperationException($"the recovery loop has no business calling {method}")
+        });
+        var owned = Guid.NewGuid();
+        var inFlight = new InFlightTracker();
+        inFlight.Track(owned, attempt: 1);
+
+        using var metrics = new RippleMetrics();
+        var recovered = new ConcurrentDictionary<string, long>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (ReferenceEquals(instrument.Meter, TelemetryTests.MeterOf(metrics)) && instrument.Name == "ripple.recovered")
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            var reason = (string)tags.ToArray().Single(t => t.Key == "reason").Value!;
+            recovered.AddOrUpdate(reason, value, (_, n) => n + value);
+        });
+        listener.Start();
+
+        using var loop = new RecoveryLoop(store.AsEngineStore, inFlight, metrics, Options.Create(options), _time,
+            NullLogger<RecoveryLoop>.Instance);
+        await loop.StartAsync(CancellationToken.None);
+
+        // First tick: exactly on the interval, both sweeps, with the configured thresholds.
+        await WaitUntilAsync(() => _time.TimersCreated == 1);
+        _time.Advance(options.RecoveryInterval - TimeSpan.FromTicks(1));
+        store.Calls("RecoverStaleAsync").ShouldBe(0, "no sweep before the interval");
+        _time.Advance(TimeSpan.FromTicks(1));
+        await WaitUntilAsync(() => store.Calls("RecoverSelfStrandedAsync") == 1);
+
+        store.Calls("RecoverStaleAsync").ShouldBe(1);
+        var stale = store.LastArgs("RecoverStaleAsync");
+        stale[0].ShouldBe(options.HeartbeatTimeout);
+        stale[1].ShouldBe("clock-test", "an instance never declares itself dead");
+
+        var stray = store.LastArgs("RecoverSelfStrandedAsync");
+        stray[0].ShouldBe("clock-test");
+        stray[1].ShouldBeAssignableTo<IReadOnlyCollection<Guid>>()!.ShouldBe([owned], "what the pipeline runs is kept");
+        stray[2].ShouldBe(options.SelfReconcileGrace);
+
+        recovered["dead_instance"].ShouldBe(2);
+        recovered["self_stranded"].ShouldBe(1);
+
+        // The kept set is read live each tick, not captured once: after the attempt settles, nothing is kept.
+        inFlight.Release([(owned, 1)]);
+        await WaitUntilAsync(() => _time.TimersCreated == 2);
+        _time.Advance(options.RecoveryInterval);
+        await WaitUntilAsync(() => store.Calls("RecoverSelfStrandedAsync") == 2);
+        store.LastArgs("RecoverSelfStrandedAsync")[1].ShouldBeAssignableTo<IReadOnlyCollection<Guid>>()!.ShouldBeEmpty();
+        recovered["dead_instance"].ShouldBe(4);
+        recovered["self_stranded"].ShouldBe(2);
+
+        await loop.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     /// <summary>One failing sweep must not skip the other: chained, a dead-instance sweep that kept failing would
     /// starve self-reconciliation — the only rescue for a live instance's own stranded claims — indefinitely.</summary>
     [Theory]
@@ -621,7 +852,8 @@ public sealed class ClockDrivenTests
 
     // ---- fixture ---------------------------------------------------------------------------------
 
-    private ExecutionPipeline BuildPipeline(Action<RippleEngineOptions>? configure = null, bool start = true)
+    private ExecutionPipeline BuildPipeline(Action<RippleEngineOptions>? configure = null, bool start = true,
+        IRetryPolicy? retryPolicy = null)
     {
         var options = new RippleEngineOptions { InstanceId = "clock-test", MaxConcurrency = 1 };
         configure?.Invoke(options);
@@ -637,7 +869,7 @@ public sealed class ClockDrivenTests
         var opts = Options.Create(options);
         var inFlight = new InFlightTracker();
         var pipeline = new ExecutionPipeline(opts, registry, services.GetRequiredService<IServiceScopeFactory>(),
-            inFlight, new ExponentialRetryPolicy(opts), BuildSettlement(opts, inFlight), new RippleMetrics(), _time,
+            inFlight, retryPolicy ?? new ExponentialRetryPolicy(opts), BuildSettlement(opts, inFlight), new RippleMetrics(), _time,
             NullLogger<ExecutionPipeline>.Instance);
         if (start)
         {
@@ -649,7 +881,7 @@ public sealed class ClockDrivenTests
 
     /// <summary>A real dispatcher over a real (handler-less) pipeline, talking to a scripted store.</summary>
     private Dispatcher BuildDispatcher(IOptions<RippleEngineOptions> options, ScriptedEngineStore store,
-        ExecutionPipeline? pipeline = null)
+        ExecutionPipeline? pipeline = null, IHostApplicationLifetime? lifetime = null)
     {
         var registry = new RippleHandlerRegistry();
         var inFlight = new InFlightTracker();
@@ -657,8 +889,12 @@ public sealed class ClockDrivenTests
         pipeline ??= new ExecutionPipeline(options, registry, scopes, inFlight, new ExponentialRetryPolicy(options),
             BuildSettlement(options, inFlight), new RippleMetrics(), _time, NullLogger<ExecutionPipeline>.Instance);
         return new Dispatcher(pipeline, registry, store.AsEngineStore, new RippleMetrics(), options,
-            new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
+            lifetime ?? new NoopLifetime(), _time, NullLogger<Dispatcher>.Instance);
     }
+
+    private static ClaimedRipple Claimed()
+        => new(Guid.NewGuid(), Guid.NewGuid(), 1, 3, TypeKey, nameof(ClockRipple),
+            JsonDocument.Parse($$"""{"id":"{{Guid.NewGuid()}}"}"""), null, JsonDocument.Parse("{}"));
 
     private SettlementWriter BuildSettlement(IOptions<RippleEngineOptions> options, InFlightTracker inFlight)
         => new(options, _store, inFlight, new RippleMetrics(), _time, NullLogger<SettlementWriter>.Instance);
@@ -815,11 +1051,17 @@ public sealed class ClockDrivenTests
 
         public int Calls(string method) => _calls.GetValueOrDefault(method);
 
+        /// <summary>The arguments of the most recent call to <paramref name="method"/>.</summary>
+        public object?[] LastArgs(string method) => _lastArgs[method];
+
+        private readonly ConcurrentDictionary<string, object?[]> _lastArgs = new();
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             var name = targetMethod!.Name;
             TimersAtLastCall = _time.TimersCreated;
             _calls.AddOrUpdate(name, 1, (_, n) => n + 1);
+            _lastArgs[name] = args ?? [];
             return _respond(name, args?.OfType<CancellationToken>().LastOrDefault() ?? default);
         }
     }
@@ -830,6 +1072,26 @@ public sealed class ClockDrivenTests
         public CancellationToken ApplicationStopping => CancellationToken.None;
         public CancellationToken ApplicationStopped => CancellationToken.None;
         public void StopApplication() { }
+    }
+
+    private sealed class RecordingLifetime : IHostApplicationLifetime
+    {
+        private int _stopRequests;
+
+        public int StopRequests => Volatile.Read(ref _stopRequests);
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() => Interlocked.Increment(ref _stopRequests);
+    }
+
+    /// <summary>Faults the execute block on demand. The block's action catches everything the handler does, so it
+    /// only faults when something AFTER the handler throws — and the retry decision is the one injected step there.</summary>
+    private sealed class ThrowingRetryPolicy : IRetryPolicy
+    {
+        public const string Message = "retry policy failed";
+
+        public TimeSpan? NextDelay(int attempt, int maxAttempts) => throw new InvalidOperationException(Message);
     }
 
     private sealed class CountingLoop(TimeSpan interval, TimeProvider time)

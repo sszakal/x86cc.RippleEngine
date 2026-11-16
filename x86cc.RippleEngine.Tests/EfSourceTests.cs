@@ -113,6 +113,50 @@ public sealed class EfSourceTests : RippleTestBase
             "select count(*) from ripple.ripple where parent_ripple_id = @p", new { p = parentRippleId })).ShouldBe(4);
     }
 
+    /// <summary>The EF twin of the Marten batched fan-out: matching rows are bucketed server-side, N per ripple,
+    /// into one batch payload each (the scalar projection aggregated into the <c>into</c> array) — still without
+    /// loading a row. Only the matching rows are bucketed, and every one lands in exactly one bucket.</summary>
+    [Fact]
+    public async Task batched_fan_out_via_ef_collapses_matching_rows_into_one_ripple_per_bucket()
+    {
+        await ResetAsync();
+
+        var options = new DbContextOptionsBuilder<SampleEfContext>().UseNpgsql(ConnectionString).Options;
+        await using var db = new SampleEfContext(options);
+        await db.GetService<IRelationalDatabaseCreator>().CreateTablesAsync();
+
+        var impacted = Enumerable.Range(0, 7)
+            .Select(_ => new EfCompany { Id = Guid.NewGuid(), TaxCode = "MIG" }).ToList();
+        db.Companies.AddRange(impacted);
+        db.Companies.AddRange(Enumerable.Range(0, 2)
+            .Select(_ => new EfCompany { Id = Guid.NewGuid(), TaxCode = "US" })); // not impacted
+        await db.SaveChangesAsync();
+
+        var builder = EfGenerator.Create(db, "migrate", new RecalcContext { LegislationCode = "MIG" });
+        Should.Throw<ArgumentOutOfRangeException>(() => builder.AddRipplesBatched<EfCompany, WaveGeneratorTests.RecalcBatch, Guid>(
+            c => c.TaxCode == "MIG", c => c.Id, b => b.CompanyIds, batchSize: 0));
+
+        var wave = await builder
+            .AddRipplesBatched<EfCompany, WaveGeneratorTests.RecalcBatch, Guid>(
+                c => c.TaxCode == "MIG",
+                c => c.Id,
+                b => b.CompanyIds,
+                batchSize: 3)
+            .DispatchAsync();
+
+        // 7 matching rows / 3 per bucket => 3 ripples (3 + 3 + 1).
+        wave.RippleCount.ShouldBe(3);
+        (await ScalarAsync("select count(*) from ripple.ripple where type_key = 'RecalcContext|RecalcBatch'")).ShouldBe(3);
+
+        var batches = (await Engine.PollAsync(100, "inst-1", 0))
+            .Select(r => r.Payload.RootElement.Deserialize<WaveGeneratorTests.RecalcBatch>(Web)!.CompanyIds)
+            .ToList();
+        batches.Select(b => b.Count).OrderBy(n => n).ShouldBe([1, 3, 3]);
+        var all = batches.SelectMany(b => b).ToList();
+        all.Count.ShouldBe(7, "no row lands in two buckets");
+        all.ToHashSet().SetEquals(impacted.Select(c => c.Id)).ShouldBeTrue();
+    }
+
     [Fact]
     public async Task ef_create_matching_zero_rows_is_born_completed()
     {

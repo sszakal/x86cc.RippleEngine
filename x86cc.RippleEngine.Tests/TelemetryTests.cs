@@ -214,7 +214,7 @@ public sealed class TelemetryTests : RippleTestBase
 
     // RippleMetrics owns a private Meter; every instance uses the same name, so tests that run in one process
     // tell their own apart by instance rather than by name.
-    private static Meter MeterOf(RippleMetrics metrics)
+    internal static Meter MeterOf(RippleMetrics metrics)
         => (Meter)typeof(RippleMetrics)
             .GetField("_meter", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
             .GetValue(metrics)!;

@@ -84,6 +84,48 @@ public sealed class DashboardApiTests : RippleTestBase
         (await _http.GetAsync($"/api/waves/{Guid.NewGuid()}/report.csv")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
     }
 
+    /// <summary>The report CSV only exists once the wave is compacted (202 until then), and its output and target
+    /// fields are quoted with embedded quotes doubled — so an output carrying a quote, a comma, or a line break
+    /// (exception messages routinely do) stays one field; a null output is an empty, unquoted field.</summary>
+    [Fact]
+    public async Task the_report_csv_is_pending_until_compaction_then_escapes_every_field()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 1);
+        var url = $"/api/waves/{wave.Id}/report.csv";
+
+        var pending = await _http.GetAsync(url);
+        pending.StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var status = await pending.Content.ReadFromJsonAsync<JsonElement>();
+        status.GetProperty("status").GetString().ShouldBe("report pending");
+
+        const string output = "bad \"quote\", comma\nsecond line";
+        var report = JsonSerializer.Serialize(new object[]
+        {
+            new { outcome = "Failed", output, targetIds = new[] { "t1", "t2" } },
+            new { outcome = "Succeeded", output = (string?)null, targetIds = new[] { "t3" } }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var claimed = (await Engine.PollAsync(10, "inst-1", 0)).ShouldHaveSingleItem();
+        await Splashes.FailRipplesAsync(
+            [new RippleFailure(claimed.Id, wave.Id, claimed.Attempt, DateTimeOffset.UtcNow.AddSeconds(-1), report,
+                Terminal: true, NextAttemptAt: null)],
+            "inst-1");
+        await RefreshWaveStatsAsync();
+        await CompactWaveAsync(wave.Id);
+
+        var response = await _http.GetAsync(url);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Content.Headers.ContentType!.MediaType.ShouldBe("text/csv");
+        response.Content.Headers.ContentDisposition!.FileName.ShouldBe($"wave-{wave.Id}-report.csv");
+
+        const string header = "outcome,output,target_count,target_ids\n";
+        const string failedRow = "Failed,\"bad \"\"quote\"\", comma\nsecond line\",2,\"t1;t2\"\n";
+        const string succeededRow = "Succeeded,,1,\"t3\"\n";
+        (await response.Content.ReadAsStringAsync())
+            .ShouldBeOneOf(header + failedRow + succeededRow, header + succeededRow + failedRow);
+    }
+
     [Fact]
     public async Task activity_histogram_and_cluster_use_the_wrappers_the_spa_unpacks()
     {

@@ -2,6 +2,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using OpenTelemetry;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using Shouldly;
 using x86cc.RippleEngine.Core;
 using x86cc.RippleEngine.Engine;
@@ -260,6 +263,83 @@ public sealed class FacadeTests
         Should.NotThrow(() => host.Services.GetRequiredService<IOptions<RippleEngineOptions>>().Value);
     }
 
+    /// <summary><c>EnableMetrics</c> / <c>EnableTracing</c> each wire their own OpenTelemetry pipeline, subscribed to
+    /// the engine's meter / activity source BY NAME — so a renamed meter or source can't silently export nothing —
+    /// and neither switch drags in the other's pipeline.</summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void the_telemetry_switches_subscribe_opentelemetry_to_the_engine_by_name(bool metrics, bool tracing)
+    {
+        // The SDK only enables instruments for a provider that has a reader; with no OTLP endpoint there is none,
+        // so attach a collecting one (additive, as a host's own exporter would be) to observe what gets exported.
+        var exported = new CollectingMetricExporter();
+        var builder = Host.CreateEmptyApplicationBuilder(null);
+        builder.Services.AddLogging();
+        builder.AddRippleEngine(o =>
+        {
+            o.ConnectionString = Connection;
+            o.EnableMetrics = metrics;
+            o.EnableTracing = tracing;
+        });
+        if (metrics)
+        {
+            builder.Services.ConfigureOpenTelemetryMeterProvider(m => m.AddReader(new BaseExportingMetricReader(exported)));
+        }
+
+        using var host = builder.Build();
+
+        var meterProvider = host.Services.GetService<MeterProvider>();
+        var tracerProvider = host.Services.GetService<TracerProvider>();
+        (meterProvider is not null).ShouldBe(metrics, "a meter provider exactly when metrics are enabled");
+        (tracerProvider is not null).ShouldBe(tracing, "a tracer provider exactly when tracing is enabled");
+
+        if (metrics)
+        {
+            // A real engine instrument, recorded after the provider started, comes out the other end.
+            using var engineMetrics = new RippleMetrics();
+            engineMetrics.Recovered(2, "dead_instance");
+            meterProvider!.ForceFlush().ShouldBeTrue();
+            exported.Names.ShouldContain("ripple.recovered");
+        }
+
+        if (tracing)
+        {
+            RippleDiagnostics.Source.HasListeners().ShouldBeTrue();
+        }
+    }
+
+    /// <summary>The OTLP exporter is added only when an endpoint is configured (Aspire injects one), so a
+    /// standalone run doesn't start an exporter against a collector that isn't there.</summary>
+    [Fact]
+    public void the_otlp_exporter_is_added_only_when_an_endpoint_is_configured()
+    {
+        static int OtlpRegistrations(string? endpoint)
+        {
+            var builder = Host.CreateEmptyApplicationBuilder(null);
+            if (endpoint is not null)
+            {
+                builder.Configuration.AddInMemoryCollection(
+                    new Dictionary<string, string?> { ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint });
+            }
+
+            builder.AddRippleEngine(o =>
+            {
+                o.ConnectionString = Connection;
+                o.EnableMetrics = true;
+            });
+            return builder.Services.Count(d =>
+                (d.ServiceType.FullName ?? "").Contains("Otlp", StringComparison.Ordinal)
+                || (d.ImplementationType?.FullName ?? "").Contains("Otlp", StringComparison.Ordinal));
+        }
+
+        OtlpRegistrations(endpoint: null).ShouldBe(0);
+        OtlpRegistrations(endpoint: "   ").ShouldBe(0, "a blank endpoint counts as none");
+        OtlpRegistrations(endpoint: "http://localhost:4317").ShouldBeGreaterThan(0);
+    }
+
     // A deterministic "something else, but still valid": every knob is a positive count or duration, so nudging
     // it upwards keeps the options-validation rules satisfied.
     private static object? Mutate(object? current) => current switch
@@ -270,6 +350,21 @@ public sealed class FacadeTests
         _ => throw new NotSupportedException(
             $"Unhandled option type {current?.GetType().Name ?? "null"} — extend Mutate.")
     };
+
+    private sealed class CollectingMetricExporter : BaseExporter<Metric>
+    {
+        public System.Collections.Concurrent.ConcurrentBag<string> Names { get; } = [];
+
+        public override ExportResult Export(in Batch<Metric> batch)
+        {
+            foreach (var metric in batch)
+            {
+                Names.Add(metric.Name);
+            }
+
+            return ExportResult.Success;
+        }
+    }
 
     private static List<string> HostedServiceNames(IHost host) =>
         host.Services.GetServices<IHostedService>().Select(s => s.GetType().Name).ToList();
