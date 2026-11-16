@@ -78,7 +78,8 @@ fair share.
 - **Operability** — an Angular dashboard (waves, timelines, per-type metrics, live cluster, CSV report export,
   editable schedule config) plus OpenTelemetry metrics tagged by type.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how each of these works, and [AGENTS.md](AGENTS.md) for repo
+See the **[documentation site](https://ripple.x86.cc/)** (source in [`docs/`](docs/)),
+[ARCHITECTURE.md](ARCHITECTURE.md) for how each of these works, and [AGENTS.md](AGENTS.md) for repo
 conventions.
 
 ## Getting started

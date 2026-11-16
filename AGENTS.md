@@ -139,6 +139,13 @@ company/government-taxation demo — see [README.md](README.md). The Worker is t
 `AddRippleEngine` with `EnableDashboard`/`EnableMetrics`; the WebAPI is the creation-side shape
 (`EnableWorkers = false` + `o.UseMartenFanOut()`).
 
+**`docs/`** is the published documentation site (Docusaurus 3, Node — not part of the .NET solution), deployed to
+GitHub Pages by `.github/workflows/docs.yml` on pushes to `main` that touch `docs/**`. Pages are Markdown under
+`docs/content/`; the sidebar (`docs/sidebars.ts`) is curated by hand, so a new page must be listed there. `cd docs
+&& npm ci && npm run build` is its check (fails on broken internal links). When you change behaviour that the
+docs describe (options and defaults, API shapes, the mechanism), update the matching page — see
+[docs/README.md](docs/README.md).
+
 ## Architecture in one screen
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
