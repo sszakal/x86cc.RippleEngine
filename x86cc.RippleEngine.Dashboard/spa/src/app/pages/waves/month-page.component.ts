@@ -36,7 +36,7 @@ interface DayCell {
               <span class="text-xs font-medium text-gray-400">{{ c.day }}</span>
             </div>
           } @else if (c.data && c.data.count > 0) {
-            <a class="flex h-14 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
+            <a class="on-tint flex h-14 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
                [style.background]="rampColor(c.data.count, c.data.faulted, c.data.running)"
                [title]="c.date && tooltip(c.date, c.data)" [routerLink]="dayLink(c.day)">
               <span class="text-xs font-semibold text-gray-900">{{ c.day }}</span>

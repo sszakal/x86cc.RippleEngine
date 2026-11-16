@@ -31,7 +31,7 @@ import { Gran, WAVE_TILE_LIMIT, WaveSegments, rangeFromSegments, segmentsOf } fr
         <div class="flex flex-wrap gap-2">
           @for (b of buckets(); track b.start) {
             <a
-              class="flex h-16 w-24 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
+              class="on-tint flex h-16 w-24 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
               [style.background]="rampColor(b.count, b.faulted, b.running)"
               [title]="bucketLabel(b, childGran()) + ' — ' + b.count + ' waves'" [routerLink]="deeperLink(b)">
               <span class="text-sm font-semibold text-gray-900">{{ bucketLabel(b, childGran()) }}</span>

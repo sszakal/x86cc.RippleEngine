@@ -23,7 +23,7 @@ interface HourCell {
         @for (c of cells(); track c.hour) {
           @if (c.bucket; as b) {
             <a
-              class="flex h-16 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
+              class="on-tint flex h-16 flex-col justify-between rounded-lg p-2 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
               [style.background]="rampColor(b.count, b.faulted, b.running)"
               [title]="hourLabel(c.hour) + ' — ' + b.count + ' waves'" [routerLink]="hourLink(c.hour)">
               <span class="text-sm font-semibold text-gray-900">{{ hourLabel(c.hour) }}</span>

@@ -1,0 +1,12 @@
+{
+  "name": "ripple-sample-demo",
+  "private": true,
+  "type": "module",
+  "description": "Records the sample overview video (docs/static/video/ripple-demo.mp4).",
+  "scripts": {
+    "record": "node record.mjs out && ./build.sh out ../../docs/static/video/ripple-demo.mp4 ../../docs/static/video/ripple-demo.jpg"
+  },
+  "dependencies": {
+    "playwright-core": "1.49.1"
+  }
+}

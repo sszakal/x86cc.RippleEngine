@@ -12,6 +12,10 @@ Worker replicas** — around a company/government-taxation scenario:
 dotnet run --project x86cc.Ripple.Sample.AppHost
 ```
 
+Two minutes of it: waves triggered from Swagger, then watched, rescheduled, paused and resumed from the dashboard.
+
+<video controls muted playsInline preload="metadata" poster="/video/ripple-demo.jpg" src="/video/ripple-demo.mp4" style={{width: '100%', borderRadius: 12}}></video>
+
 ```mermaid
 flowchart LR
     U([You]) -->|Swagger :5100| API["Sample.WebAPI<br/>EnableWorkers = false<br/>UseMartenFanOut()"]

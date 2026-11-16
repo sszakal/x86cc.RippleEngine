@@ -22,7 +22,7 @@ import { statusClass, waveDot, waveTint } from './wave-palette';
             <div class="relative z-10 h-3 w-3 rounded-full ring-2 ring-white" [style.background]="waveDot(w.status)"></div>
           </div>
           <button
-            class="flex flex-1 items-center justify-between gap-3 rounded-xl p-3 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.01]"
+            class="on-tint flex flex-1 items-center justify-between gap-3 rounded-xl p-3 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.01]"
             [style.background]="waveTint(w.status)" (click)="open.emit(w)">
             <span class="line-clamp-1 min-w-0 text-sm font-semibold text-gray-900">{{ w.name }}</span>
             <span class="flex shrink-0 items-center gap-3 text-xs text-gray-600">

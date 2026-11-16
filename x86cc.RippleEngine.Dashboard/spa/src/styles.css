@@ -33,6 +33,12 @@ html, body { height: 100%; }
 .dark .text-gray-400 { color: #6b7280; }
 .dark .text-gray-300 { color: #6b7280; }
 
+/* Status-tinted tiles (wave timeline rows, calendar and hour-grid cells) keep their light inline fills in both
+   themes, so their text must stay dark too — the generic dark-mode text rules above would wash it out. */
+.dark .on-tint .text-gray-900 { color: #111827; }
+.dark .on-tint .text-gray-700,
+.dark .on-tint .text-gray-600 { color: #374151; }
+
 .dark .border-gray-100,
 .dark .border-gray-200 { border-color: #374151; }
 .dark .border-gray-300 { border-color: #4b5563; }

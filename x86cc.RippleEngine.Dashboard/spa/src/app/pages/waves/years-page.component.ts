@@ -15,7 +15,7 @@ import { rampColor, yearOf } from './wave-palette';
       <div class="flex flex-wrap gap-3">
         @for (b of buckets(); track b.start) {
           <a
-            class="flex h-20 w-28 flex-col justify-between rounded-xl p-3 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
+            class="on-tint flex h-20 w-28 flex-col justify-between rounded-xl p-3 text-left ring-1 ring-inset ring-black/5 transition-transform hover:scale-[1.04]"
             [style.background]="rampColor(b.count, b.faulted, b.running)" [routerLink]="['/waves', yearOf(b)]">
             <span class="text-lg font-semibold text-gray-900">{{ yearOf(b) }}</span>
             <span class="text-xs text-gray-700">{{ b.count | number }} wave{{ b.count === 1 ? '' : 's' }}</span>

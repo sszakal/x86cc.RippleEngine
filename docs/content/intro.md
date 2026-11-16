@@ -17,6 +17,8 @@ the database**. No broker, no scheduler service, no leader election.
 
 You implement exactly one interface, `IRippleHandler<TWave, TRipple>`. The engine owns everything else.
 
+<video controls muted playsInline preload="metadata" poster="/video/ripple-demo.jpg" src="/video/ripple-demo.mp4" style={{width: '100%', borderRadius: 12}}></video>
+
 ## The problem it solves
 
 When one event impacts a huge set of entities, the obvious approach doesn't scale:
