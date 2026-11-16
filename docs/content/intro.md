@@ -4,12 +4,12 @@ sidebar_position: 1
 slug: /
 ---
 
-# RippleEngine
+# Ripple
 
 **Turn one business event into millions of per-entity tasks — without ever loading the source rows into your
 app, and without a message broker.**
 
-RippleEngine is a .NET library for **massive, set-based fan-out** over a Postgres store. A single event
+Ripple is a .NET library for **massive, set-based fan-out** over a Postgres store. A single event
 ("the corporate tax rate changed", "this legislation now applies", "re-index everything in region X") spawns
 200k–10M+ per-entity tasks that a cluster of identical worker processes then executes — with retries,
 fair-share scheduling, crash recovery, back-pressure, and a live dashboard — coordinating **entirely through
@@ -27,7 +27,7 @@ That round-trips millions of rows through your process and a broker just to say 
 serialization, and broker throughput all become the bottleneck before any real work happens. And once the
 backlog exists, one giant job starves every other job behind it.
 
-RippleEngine does the fan-out **inside Postgres**. `AddRipples(predicate, toMessage)` compiles to a single
+Ripple does the fan-out **inside Postgres**. `AddRipples(predicate, toMessage)` compiles to a single
 server-side `INSERT INTO ripple.ripple … SELECT … FROM <your table> WHERE <predicate>` — one statement that
 creates a task row per impacted entity **without the source rows ever leaving the database**. Workers then
 pull tasks straight from Postgres with `FOR UPDATE SKIP LOCKED`, in an order that already encodes each job's

@@ -5,7 +5,7 @@ sidebar_position: 1
 
 # Architecture overview
 
-RippleEngine is a **self-contained, in-process distributed job engine**: .NET hosted services + TPL Dataflow +
+Ripple is a **self-contained, in-process distributed job engine**: .NET hosted services + TPL Dataflow +
 raw Postgres (Dapper). The database is the only source of truth; instances coordinate purely through it —
 `FOR UPDATE SKIP LOCKED`, a precomputed `schedule_order` ordering key, a periodically-recomputed stats table,
 and heartbeats. There is **no message broker**, no scheduler service and no leader.

@@ -1,6 +1,6 @@
-# RippleEngine documentation site
+# Ripple documentation site
 
-The RippleEngine docs, built with [Docusaurus 3](https://docusaurus.io/) (docs-only mode, served at `/`) and
+The Ripple docs, built with [Docusaurus 3](https://docusaurus.io/) (docs-only mode, served at `/`) and
 the [Cosmos](https://sckyzo.github.io/cosmos-docusaurus-theme) theme, with Mermaid diagrams and KaTeX math.
 Published to <https://ripple.x86.cc/>.
 

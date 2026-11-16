@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # Known limits & roadmap
 
-RippleEngine is **pre-1.0** and not yet run in production. Each limit below is a deliberate trade, not an
+Ripple is **pre-1.0** and not yet run in production. Each limit below is a deliberate trade, not an
 omission.
 
 - **The scheduler is static.** Once `schedule_order` is stamped it is never rebalanced, so thousands of jobs

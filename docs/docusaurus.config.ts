@@ -4,7 +4,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
 const config: Config = {
-  title: 'RippleEngine',
+  title: 'Ripple',
   tagline: 'One business event, millions of per-entity tasks — no broker, just Postgres',
   favicon: 'img/logo.svg',
 
@@ -65,9 +65,9 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'RippleEngine',
+      title: 'Ripple',
       logo: {
-        alt: 'RippleEngine',
+        alt: 'Ripple',
         src: 'img/logo.svg',
       },
       items: [
