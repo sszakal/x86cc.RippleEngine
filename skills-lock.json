@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "skills": {
+    "coverage-analysis": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-test/skills/coverage-analysis/SKILL.md",
+      "computedHash": "4445135fe1e9b0a7da0d9ee67cd9c0f3acae15a9f95dae62b50f3c53bf012719",
+      "installMode": "copy"
+    },
+    "crap-score": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-test/skills/crap-score/SKILL.md",
+      "computedHash": "e857db78b68ea5d0951ec79a7e5ef7d0ec146e38360a74b4c2b12538258d6745",
+      "installMode": "copy"
+    },
+    "csharp-refactoring": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet/skills/csharp-refactoring/SKILL.md",
+      "computedHash": "32a0247c73bc42649c6de7fd54ac0f7b4dadc4f6d0968b155a12aec58f669dfc",
+      "installMode": "copy"
+    },
+    "dotnet-breaking-changes": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet/skills/dotnet-breaking-changes/SKILL.md",
+      "computedHash": "539da90a5bb4b20a77a14966cedd730acb81551aabe1c7609b13ddccf7ad10ea",
+      "installMode": "copy"
+    },
+    "nuget-trusted-publishing": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-advanced/skills/nuget-trusted-publishing/SKILL.md",
+      "computedHash": "fd769bb3bf008153f1b37ae119e0c8df8db158f666b1655216c9f2af8c7604ed",
+      "installMode": "copy"
+    },
+    "run-tests": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-test/skills/run-tests/SKILL.md",
+      "computedHash": "ae1fc27bdc724c82e84871ed3dbbd2a08491a6898b1024fb67f6b463067ec058",
+      "installMode": "copy"
+    },
+    "test-anti-patterns": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-test/skills/test-anti-patterns/SKILL.md",
+      "computedHash": "74584d0c3de8a323be580719a9da112cf30437ad69a28e00a56b45b33114db6c",
+      "installMode": "copy"
+    },
+    "test-gap-analysis": {
+      "source": "dotnet/skills",
+      "commit": "2877c712edc20643b72f64e2983b168e6661d607",
+      "sourceType": "github",
+      "skillPath": "plugins/dotnet-test/skills/test-gap-analysis/SKILL.md",
+      "computedHash": "dfcc2aaf2b9268d8661c814bd4fc16175465ce77b967db6c2d4987bd2dfd61af",
+      "installMode": "copy"
+    }
+  }
+}
