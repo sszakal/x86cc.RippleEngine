@@ -17,11 +17,15 @@ public interface IRippleHandler<in TWave, in TRipple> where TRipple : IRippleTar
 - `TWave` is the **wave payload** — the shared event, serialized once onto the wave row.
 - `TRipple` is the **ripple payload** — one task, implementing `IRippleTarget` so it declares the target ids
   it covers (`TargetIds`). A ripple may target one entity or a batch of them.
-- `IRippleContext` gives read-only attempt info, a timeout `CancellationToken`, and the wave/ripple ids needed
-  for [in-flight expansion](/guides/expansion).
+- `IRippleContext` gives read-only attempt info (`Attempt`, `MaxAttempts`, …), a timeout `CancellationToken`,
+  and the wave/ripple ids needed for [in-flight expansion](/guides/expansion). See
+  [Handler context & testing](/guides/context-and-testing) for every member and how to unit-test a handler.
 
 Register it in each worker with `AddHandler<TWave, TRipple, THandler>(batchSize, gapSeconds, maxAttempts)`.
-The handler is resolved from a **per-ripple DI scope**.
+The handler is resolved from a **per-ripple DI scope**. The parameterless `AddHandler<TWave, TRipple, THandler>()`
+registers the handler without seeding a type row, so the type inherits the reserved `__default__` schedule
+(see [Configuration](/guides/configuration#per-type-scheduling)). A worker only claims ripples whose `type_key`
+it has a handler for. Unhandled ripples stay `Pending` until an instance that can run them picks them up.
 
 ## Reporting is by exception
 
@@ -43,7 +47,8 @@ return report;
 | throws | every target fails with the exception message |
 
 The report aggregates targets sharing an `(outcome, message)` into one item, so 200k successes collapse to a
-single row. Unmentioned targets are inferred succeeded.
+single row. Unmentioned targets are inferred succeeded. `Success` and `Failed` also take an `IEnumerable<string>`
+of ids for one shared message (see [Building a SplashReport](/guides/context-and-testing#building-a-splashreport)).
 
 ## Retries
 

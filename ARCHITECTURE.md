@@ -49,9 +49,9 @@ Key modelling choices:
   change only `ripple.state`. A periodic `refresh_wave_stats()` recomputes each active wave's `pending`/`running`/
   `failed` onto the `wave` row from the actual rows, and completes a drained wave — all in one `UPDATE`. So the
   numbers **self-heal** (no drift under a false recovery) and no counter moves on the hot paths. A wave is done when it has
-  no pending and no running ripples; `ripple_count` keeps growing as handlers expand it (iterative fan-out),
+  no pending, no running and no paused ripples (parked work is not done); `ripple_count` keeps growing as handlers expand it (iterative fan-out),
   so the original count can't signal completion. `succeeded` is never stored — derived as
-  `ripple_count − pending − running − failed`.
+  `ripple_count − pending − running − paused − failed`.
 - **Ripples flip a `state` flag, they don't move tables.** `Pending → Running → Succeeded/Failed`. Partial
   indexes (`… where state='Pending'`, `… where state='Running'`, `… where state='Failed'`) keep the claim,
   recovery, and refresh scans over the working set only.
@@ -349,12 +349,12 @@ numbers and the **only** place a wave completes. It's a single `UPDATE ripple.wa
    this POC does not have. `running` is a deliberate exception: its cluster-wide set is bounded by
    `MaxConcurrency × instances` — smaller than one big wave's slice — and `ix_ripple_running` is keyed on
    `claimed_by`, so it stays a single grouped aggregate.
-2. **Completes** any active wave with `ripple_count > 0`, `pending = 0`, `running = 0` — flip it to `Completed`,
+2. **Completes** any active wave with `ripple_count > 0`, `pending = 0`, `running = 0`, `paused = 0` — flip it to `Completed`,
    or `Faulted` if `failed > 0`, stamping `completed_at` — in the same statement.
 
 Because it recomputes from the truth, the numbers **self-heal**: a false recovery, a double-settle, a crash
 mid-write — the next refresh corrects them; there is no delta to drift. `GetWaveAsync` (and the sample's
-`/waves`) read the `wave` row, deriving `succeeded = ripple_count − pending − running − failed`. Before a wave's
+`/waves`) read the `wave` row, deriving `succeeded = ripple_count − pending − running − paused − failed`. Before a wave's
 first refresh (`refreshed_at is null`) a read treats all its ripples as pending (the honest pre-refresh view).
 
 **Consequence:** a wave's numbers are eventually-consistent (up to one interval stale) and *not* synchronous

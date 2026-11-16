@@ -10,14 +10,16 @@ sidebar_position: 8
 is the **only** writer of a wave's live numbers and the **only** place a wave completes. It's a single
 `UPDATE ripple.wave` that:
 
-1. **Recomputes** each active wave's `pending`/`running`/`failed` from the ripple rows — reading only the small
+1. **Recomputes** each active wave's `pending`/`running`/`paused`/`failed` (and `retry_count`) from the ripple rows — reading only the small
    partial-index sets — and writes them, with `refreshed_at = now()`, onto the `wave` row. The per-wave counts
    are **correlated scalar subqueries**, each an index-range scan over one wave's slice.
-2. **Completes** any active wave with `ripple_count > 0`, `pending = 0`, `running = 0` — flipping it to
-   `Completed`, or `Faulted` if `failed > 0` — in the same statement.
+2. **Completes** any active wave with `ripple_count > 0`, `pending = 0`, `running = 0` and `paused = 0` —
+   flipping it to `Completed`, or `Faulted` if `failed > 0` — in the same statement. A wave with ripples of a
+   [paused type](/operations/dashboard#pause--resume) therefore stays `Active` until the type is resumed and
+   those ripples drain: parked work is not done.
 
 $$
-\text{succeeded} = \text{ripple\_count} - \text{pending} - \text{running} - \text{failed}
+\text{succeeded} = \text{ripple\_count} - \text{pending} - \text{running} - \text{paused} - \text{failed}
 $$
 
 `succeeded` is derived at read time, so no read scans the settled millions. Before a wave's first refresh

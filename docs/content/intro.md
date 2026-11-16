@@ -80,7 +80,8 @@ flowchart TD
 - **[Quick start](/getting-started/quick-start)** — define a handler, wire the engine, fan out a wave.
 - **[Guides](/guides/handlers)** — handlers, fan-out sources, in-flight expansion, configuration.
 - **[Architecture](/architecture/overview)** — how the fan-out, scheduler, claim, settlement and recovery work.
-- **[Operations](/operations/dashboard)** — the dashboard, metrics and tracing, and the known limits.
+- **[Operations](/operations/dashboard)** — the dashboard, metrics and tracing, the
+  [production checklist](/operations/production), and the known limits.
 
 ## Status
 

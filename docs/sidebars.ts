@@ -11,7 +11,14 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Guides',
-      items: ['guides/handlers', 'guides/fan-out', 'guides/expansion', 'guides/configuration'],
+      items: [
+        'guides/handlers',
+        'guides/context-and-testing',
+        'guides/fan-out',
+        'guides/expansion',
+        'guides/configuration',
+        'guides/programmatic-control',
+      ],
     },
     {
       type: 'category',
@@ -30,8 +37,14 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Operations',
-      items: ['operations/dashboard', 'operations/observability', 'operations/known-limits'],
+      items: [
+        'operations/dashboard',
+        'operations/observability',
+        'operations/production',
+        'operations/known-limits',
+      ],
     },
+    'contributing',
   ],
 };
 

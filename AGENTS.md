@@ -79,7 +79,7 @@ sibling packages over the same Core abstractions:
   *source*. Handler and wave-creation code depends only on this package, never the runtime or a specific
   provider. (The concrete `RippleContext` lives in Engine; the builder/generator impls in Storage and the
   provider packages.) A wave's live numbers are **recomputed from the ripple rows** by a periodic stats
-  refresh, not maintained on the hot paths; completion is "no pending and no running" (a wave's ripple count
+  refresh, not maintained on the hot paths; completion is "no pending, no running and no paused" (a wave's ripple count
   keeps growing as handlers expand it, so it can't be inferred from the original count).
 - **`x86cc.RippleEngine.Storage`** — the coordination surface (Dapper + FluentMigrator). `IEngineStore`
   (`EngineStore.cs`: create wave / add ripples / the one-round-trip `PollAsync` claim / heartbeat / recovery /
@@ -200,7 +200,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full treatment. The essentials:
 8. **Stats + completion** (`WaveStatsRefreshLoop` → `refresh_wave_stats()`): the ONLY writer of a wave's live
    numbers and the ONLY place a wave completes. Every `WaveStatsRefreshInterval` (advisory-lock-gated) it recomputes
    each active wave's pending/running/failed (onto the `wave` row) from the actual ripple states and flips a
-   drained wave (`pending=0`, `running=0`) to Completed/Faulted — one `UPDATE`.
+   drained wave (`pending=0`, `running=0`, `paused=0`) to Completed/Faulted — one `UPDATE`.
 
 ## Completion is recomputed, not counted (no hot counter rows)
 
@@ -210,7 +210,7 @@ from the truth by `refresh_wave_stats()` (written onto the `wave` row) — readi
 state='Pending'`, the tiny `Running` set, `(wave_id) where state='Failed'`), via **correlated** per-wave counts
 (which bound `failed`/`retries` to active waves; `pending` is inherently active-only, so its cost stands) — so the numbers **self-heal**
 (no drift under a false recovery) and completion is always decided from actual row states. `succeeded` is never
-stored; it's derived at read time as `ripple_count - pending - running - failed`, so no read scans the settled
+stored; it's derived at read time as `ripple_count - pending - running - paused - failed`, so no read scans the settled
 millions. **Consequence for tests:** wave numbers are no longer synchronous — storage-level tests must call
 `RefreshWaveStatsAsync()` (or run the engine, which drives `WaveStatsRefreshLoop`) before asserting them. **If you add
 a per-wave aggregate, recompute it in `refresh_wave_stats()` — do not add a synchronously-maintained counter.**

@@ -1,6 +1,6 @@
 ---
 title: Known limits
-sidebar_position: 3
+sidebar_position: 4
 ---
 
 # Known limits & roadmap

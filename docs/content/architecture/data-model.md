@@ -11,7 +11,7 @@ a single authoritative `CREATE` while the database is ephemeral at POC stage. Ho
 
 | Table | Role | Hot? |
 |---|---|---|
-| `wave` | one small row per job: shared payload, `status`, `ripple_count`, and its **recomputed** `pending`/`running`/`failed` (+`refreshed_at`) | fan-out / completion + the periodic refresh |
+| `wave` | one small row per job: shared payload, `status`, `ripple_count`, and its **recomputed** `pending`/`running`/`paused`/`failed`/`retry_count` (+`refreshed_at`) | fan-out / completion + the periodic refresh |
 | `ripple` | the huge table: one row per task, with `state`/`attempt`/`type_key`/`schedule_order`/payload | yes → partial indexes |
 | `splash` | one row per execution attempt: outcome, per-target `report` jsonb, claimed/started/ended, duration | append-only |
 | `instance_heartbeat` | cluster membership: `last_seen_at`, `executing` | tiny |
@@ -60,8 +60,9 @@ stateDiagram-v2
 
 - **Nothing counts on the hot paths.** The claim, settlement, and recovery change only `ripple.state`. The
   wave's numbers are recomputed periodically from the actual rows, so they **self-heal**. `succeeded` is never
-  stored — derived as `ripple_count − pending − running − failed`.
-- **Completion is "no pending and no running"**, not "count reached". `ripple_count` keeps growing as handlers
+  stored — derived as `ripple_count − pending − running − paused − failed`.
+- **Completion is "no pending, no running and no paused"**, not "count reached" — parked work of a paused
+  type holds the wave open. `ripple_count` keeps growing as handlers
   expand the wave, so the original count can't signal completion.
 - **`schedule_order` is a precomputed ordering key, not a deadline.** Stamped once at fan-out and never
   rewritten (except by an explicit operator reschedule).
