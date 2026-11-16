@@ -147,6 +147,27 @@ public sealed class DashboardApiTests : RippleTestBase
     }
 
     [Fact]
+    public async Task queue_reports_depth_and_a_null_estimate_until_a_rate_is_measured()
+    {
+        await ResetAsync();
+
+        var empty = await GetJsonAsync("/api/queue");
+        empty.GetProperty("depth").GetInt64().ShouldBe(0);
+        empty.GetProperty("drainRate").ValueKind.ShouldBe(JsonValueKind.Null);
+        empty.GetProperty("estimatedDrainSeconds").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 3);
+        await Engine.TryRefreshWaveStatsAsync();
+
+        var body = await GetJsonAsync("/api/queue");
+        body.GetProperty("depth").GetInt64().ShouldBe(3);
+        body.TryGetProperty("headWaitSeconds", out _).ShouldBeFalse();
+        // One refresh is only a baseline: no rate has been measured, so no estimate either.
+        body.GetProperty("estimatedDrainSeconds").ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
+    [Fact]
     public async Task settings_list_the_registered_handler_with_its_seeded_values()
     {
         await ResetAsync();

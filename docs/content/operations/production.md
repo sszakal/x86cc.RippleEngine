@@ -90,7 +90,8 @@ heartbeat is what lets [recovery](/architecture/settlement-and-recovery) reclaim
 
 Turn on `EnableMetrics` (and `EnableTracing` on creators and workers) and export via OTLP. Alert on at least:
 
-- `ripple.queue.depth` and `ripple.queue.head_wait`, which show the cluster falling behind;
+- `ripple.queue.depth` growing over time, meaning work is arriving faster than the cluster drains it (the
+  dashboard's estimated drain time shows how long the current backlog will take);
 - the `ripple.failed` rate by `type_key`;
 - waves that stay `Active` far longer than usual, often a paused type or a type with no worker running a
   handler for it.

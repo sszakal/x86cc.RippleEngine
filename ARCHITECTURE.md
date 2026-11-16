@@ -355,7 +355,13 @@ numbers and the **only** place a wave completes. It's a single `UPDATE ripple.wa
    or `Faulted` if `failed > 0`, stamping `completed_at` — in the same statement.
 
 Because it recomputes from the truth, the numbers **self-heal**: a false recovery, a double-settle, a crash
-mid-write — the next refresh corrects them; there is no delta to drift. `GetWaveAsync` (and the sample's
+mid-write — the next refresh corrects them; there is no delta to drift. The same pass keeps each active wave's
+**drain rate**: it stamps `drain_settled` (succeeded + failed as of that refresh, with the *current*
+`ripple_count`, so expansion never reads as negative progress) and blends the settled delta per elapsed second
+into `drain_rate`, an EWMA with a 30s time constant (`1 - exp(-dt / 30)` weight, so it means the same at any
+refresh cadence and decays toward 0 when a wave stalls). A wave's estimated finish is
+`(pending + running) / drain_rate`; the cluster's drain time is the sum of remaining work over the sum of the
+waves' rates (every settled ripple belongs to exactly one wave). Paused work is excluded: it waits for a resume. `GetWaveAsync` (and the sample's
 `/waves`) read the `wave` row, deriving `succeeded = ripple_count − pending − running − paused − failed`. Before a wave's
 first refresh (`refreshed_at is null`) a read treats all its ripples as pending (the honest pre-refresh view).
 
@@ -373,11 +379,13 @@ configured) for per-handler-type throughput/latency; the sample turns it on and 
 dashboard. Beyond throughput it counts the
 engine *intervening* — things that were previously visible only in logs: `ripple.recovered` (tagged `reason`:
 `dead_instance` / `self_stranded`), `ripple.abandoned`, `ripple.released`, `ripple.settlement.retries` and
-`ripple.settlement.rejected` — plus a `ripple.poll.duration` histogram. Two gauges describe the queue itself,
-cluster-wide: `ripple.queue.depth` (pending ripples across active waves, read from the waves' recomputed numbers)
-and `ripple.queue.head_wait` (the age of the ripple the next claim would take — the lag at the front of the
-queue). A gauge callback is synchronous, so `QueueMetricsLoop` samples them every `QueueMetricsInterval` (15s)
-and the gauges report the last sample; every instance reports the same series, and nothing is read while no one
+`ripple.settlement.rejected` — plus a `ripple.poll.duration` histogram. One gauge describes the queue itself,
+cluster-wide: `ripple.queue.depth` (pending ripples across active waves, read from the waves' recomputed numbers).
+There is deliberately no head-of-queue wait gauge: a fan-out creates a whole wave in one statement, so the head's
+age is just the draining wave's age, and measured from its `schedule_order` slot instead it is ~always 0 (the
+drain outpaces the nominal `batch_size / gap_seconds` pace by orders of magnitude, so virtual time runs hours
+ahead of the clock). Progress is reported as a drain *rate* instead (below). A gauge callback is synchronous, so
+`QueueMetricsLoop` samples it every `QueueMetricsInterval` (15s) and the gauge reports the last sample; every instance reports the same series, and nothing is read while no one
 listens.
 
 **Tracing** (`RippleDiagnostics`, `RippleSetupOptions.EnableTracing`) uses an `ActivitySource` of the same name.

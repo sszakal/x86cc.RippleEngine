@@ -8,7 +8,8 @@ sidebar_position: 1
 `o.EnableDashboard = true` serves the Angular SPA at the host's root URL, same origin as its API (`/api`):
 
 - waves by year / month / day / range, with timelines;
-- per-type throughput metrics;
+- per-type throughput metrics, plus cluster-wide queue depth, drain rate and estimated drain time;
+- each live wave's progress with its drain rate and estimated finish time;
 - live cluster membership;
 - a wave's aggregated report as CSV;
 - a settings page that edits each type's `batch_size` / `gap_seconds` / `max_attempts` (including the
@@ -66,6 +67,7 @@ Constraints:
 | `POST` | `/api/waves/{id}/reschedule` | re-stamp a live wave's pending ripples with a new batch/gap |
 | `GET` | `/api/metrics/types` | per-type throughput |
 | `GET` | `/api/cluster` | live instances |
+| `GET` | `/api/queue` | cluster-wide queue depth, drain rate and estimated drain time (`depth`, `drainRate`, `estimatedDrainSeconds`) |
 | `GET` | `/api/settings/types` | type configuration (+ registered handlers) |
 | `PUT` / `DELETE` | `/api/settings/types/{typeKey}` | edit / remove a type's schedule |
 | `POST` | `/api/settings/types/{typeKey}/pause` | pause a type |
@@ -73,6 +75,22 @@ Constraints:
 | `GET` | `/api/settings/engine` | effective engine options |
 
 Writes are validated with the store's own rules, so a bad edit is a `400`, never a `500` or a silent no-op.
+
+## Drain estimates
+
+A live wave's detail shows **≈ time left** and **finishes around** a clock time, next to its progress bar. The
+Metrics page's Queue card shows the same for the whole cluster. Both come from each active wave's
+**drain rate**, which the [stats refresh](/architecture/stats-and-completion) recomputes every
+`WaveStatsRefreshInterval` as a moving average of ripples settled per second, with a 30s time constant:
+
+- **Wave finish:** `(pending + running) / drain_rate`. It follows the wave's *current* share of the cluster, so
+  it moves when competing waves arrive or finish, typically settling within a minute.
+- **Cluster drain time:** total pending + running across active waves, over the sum of their rates.
+
+These are estimates. They assume the current pace holds, they can't foresee [in-flight
+expansion](/guides/expansion), and they exclude paused work. A wave whose remaining ripples are all paused shows
+no estimate until its type is resumed. A freshly created wave shows "Estimating…" for the first couple of
+refreshes.
 
 ## Pause / resume
 

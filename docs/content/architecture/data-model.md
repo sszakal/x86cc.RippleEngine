@@ -11,7 +11,7 @@ a single authoritative `CREATE` while the database is ephemeral at POC stage. Ho
 
 | Table | Role | Hot? |
 |---|---|---|
-| `wave` | one small row per job: shared payload, `status`, `ripple_count`, and its **recomputed** `pending`/`running`/`paused`/`failed`/`retry_count` (+`refreshed_at`) | fan-out / completion + the periodic refresh |
+| `wave` | one small row per job: shared payload, `status`, `ripple_count`, and its **recomputed** `pending`/`running`/`paused`/`failed`/`retry_count` and `drain_rate` (+`refreshed_at`) | fan-out / completion + the periodic refresh |
 | `ripple` | the huge table: one row per task, with `state`/`attempt`/`type_key`/`schedule_order`/payload | yes → partial indexes |
 | `splash` | one row per execution attempt: outcome, per-target `report` jsonb, claimed/started/ended, duration | append-only |
 | `instance_heartbeat` | cluster membership: `last_seen_at`, `executing` | tiny |

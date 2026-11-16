@@ -1,6 +1,7 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, EventEmitter, Input, OnDestroy, Output, WritableSignal, computed, inject, signal } from '@angular/core';
+import { formatDuration } from '../../core/duration';
 import { RippleApiService } from '../../core/ripple-api.service';
 import { Wave, WaveStatus } from '../../core/models';
 import { statusClass } from './wave-palette';
@@ -51,6 +52,21 @@ import { statusClass } from './wave-palette';
             <div class="h-2 w-full overflow-hidden rounded-full bg-gray-200">
               <div class="h-full rounded-full bg-emerald-500" [style.width.%]="progress(w)"></div>
             </div>
+            <!-- Estimated finish: remaining pending + running over the wave's live drain rate (a ~30s moving
+                 average from the stats refresh), so it moves with the wave's share of the cluster. -->
+            @if (!isTerminal(w.status)) {
+              <div class="mt-1.5 text-xs text-gray-500">
+                @if (w.estimatedSecondsRemaining != null) {
+                  <span class="font-medium text-gray-700">≈ {{ duration(w.estimatedSecondsRemaining) }} left</span>
+                  · finishes around {{ finishAt(w.estimatedSecondsRemaining) | date: finishFormat(w.estimatedSecondsRemaining) }}
+                  @if (w.drainRate != null) { · {{ w.drainRate | number: '1.0-1' }} /s }
+                } @else if (w.paused > 0 && w.pending + w.running === 0) {
+                  Remaining work is paused, so there's no finish to estimate until its type is resumed.
+                } @else {
+                  Estimating finish time…
+                }
+              </div>
+            }
           </div>
 
           <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -193,6 +209,20 @@ export class WavePopupComponent implements OnDestroy {
 
   isTerminal(status: WaveStatus): boolean {
     return status === 'Completed' || status === 'Faulted';
+  }
+
+  duration(seconds: number): string {
+    return formatDuration(seconds);
+  }
+
+  /** The wall-clock time the wave should finish at, `seconds` from now. */
+  finishAt(seconds: number): Date {
+    return new Date(Date.now() + seconds * 1000);
+  }
+
+  /** Time of day for a finish within the day; date and time beyond that. */
+  finishFormat(seconds: number): string {
+    return seconds < 20 * 3600 ? 'shortTime' : 'short';
   }
 
   progress(w: Wave): number {

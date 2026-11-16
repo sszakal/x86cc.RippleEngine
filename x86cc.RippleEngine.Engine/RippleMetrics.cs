@@ -16,8 +16,7 @@ namespace x86cc.RippleEngine.Engine;
 /// <c>ripple.abandoned</c> / <c>ripple.released</c> (handlers it stopped waiting for, or stopped at shutdown),
 /// <c>ripple.settlement.retries</c> / <c>ripple.settlement.rejected</c> (outcome writes that failed, or landed
 /// without their report) and <c>ripple.poll.duration</c>. And the queue itself, cluster-wide:
-/// <c>ripple.queue.depth</c> and <c>ripple.queue.head_wait</c> (see <see cref="QueueSnapshot"/>), sampled by
-/// <c>QueueMetricsLoop</c>.
+/// <c>ripple.queue.depth</c> (see <see cref="QueueSnapshot"/>), sampled by <c>QueueMetricsLoop</c>.
 /// </para>
 /// </summary>
 public sealed class RippleMetrics : IDisposable
@@ -36,7 +35,6 @@ public sealed class RippleMetrics : IDisposable
     private readonly Histogram<double> _duration;
     private readonly Histogram<double> _pollDuration;
     private readonly ObservableGauge<long> _queueDepth;
-    private readonly ObservableGauge<double> _queueHeadWait;
 
     // The last queue sample (boxed so the read/write is one atomic reference swap); null until the first one.
     private object? _queue;
@@ -64,8 +62,6 @@ public sealed class RippleMetrics : IDisposable
             "Round-trip time of one poll (heartbeat + claim).");
         _queueDepth = _meter.CreateObservableGauge("ripple.queue.depth", ObserveQueueDepth, "{ripple}",
             "Pending ripples across all active waves (cluster-wide; every instance reports the same value).");
-        _queueHeadWait = _meter.CreateObservableGauge("ripple.queue.head_wait", ObserveQueueHeadWait, "s",
-            "How long the next ripple to be claimed has been waiting (cluster-wide).");
         _meter.CreateObservableGauge("ripple.executing", ObserveExecuting, "{ripple}",
             "Ripples currently owned (executing or awaiting settlement) on this instance.");
     }
@@ -119,7 +115,7 @@ public sealed class RippleMetrics : IDisposable
     public void Polled(double durationMs) => _pollDuration.Record(durationMs);
 
     /// <summary>Whether anything is listening to the queue gauges — the sampling loop skips its read otherwise.</summary>
-    public bool QueueObserved => _queueDepth.Enabled || _queueHeadWait.Enabled;
+    public bool QueueObserved => _queueDepth.Enabled;
 
     public void SetQueue(QueueSnapshot snapshot) => Volatile.Write(ref _queue, snapshot);
 
@@ -128,14 +124,6 @@ public sealed class RippleMetrics : IDisposable
         if (Volatile.Read(ref _queue) is QueueSnapshot snapshot)
         {
             yield return new Measurement<long>(snapshot.Depth);
-        }
-    }
-
-    private IEnumerable<Measurement<double>> ObserveQueueHeadWait()
-    {
-        if (Volatile.Read(ref _queue) is QueueSnapshot snapshot)
-        {
-            yield return new Measurement<double>(snapshot.HeadWaitSeconds);
         }
     }
 

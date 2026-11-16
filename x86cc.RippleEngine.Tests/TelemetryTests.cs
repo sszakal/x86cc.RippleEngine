@@ -134,27 +134,90 @@ public sealed class TelemetryTests : RippleTestBase
         execution.Links.ShouldBeEmpty("this wave was created outside any trace, so there is nothing to link to");
     }
 
-    /// <summary>The queue sample: depth is the pending work across active waves, and head wait is the age of the
-    /// ripple the next claim would take — zero once nothing is claimable.</summary>
+    /// <summary>The queue sample: depth is the pending work across active waves, and the drain estimate is the
+    /// remaining claimable work over the waves' measured rates — unknown (null) until a rate has been measured,
+    /// and empty once nothing is left.</summary>
     [Fact]
-    public async Task the_queue_snapshot_reports_depth_and_how_long_the_head_has_waited()
+    public async Task the_queue_snapshot_reports_depth_and_the_estimated_drain()
     {
         await ResetAsync();
-        (await Engine.GetQueueSnapshotAsync()).ShouldBe(new QueueSnapshot(0, 0));
+        (await Engine.GetQueueSnapshotAsync()).ShouldBe(new QueueSnapshot(0));
 
         var wave = await CreateWaveAsync();
-        await SeedRipplesAsync(wave.Id, 5);
-        await ExecuteAsync("update ripple.ripple set created_at = now() - interval '90 seconds'");
-        await RefreshWaveStatsAsync();
+        await SeedRipplesAsync(wave.Id, 10);
+        await RefreshWaveStatsAsync(); // first refresh: the baseline, no rate yet
 
-        var waiting = await Engine.GetQueueSnapshotAsync();
-        waiting.Depth.ShouldBe(5);
-        waiting.HeadWaitSeconds.ShouldBe(90, tolerance: 5);
+        var unmeasured = await Engine.GetQueueSnapshotAsync();
+        unmeasured.Depth.ShouldBe(10);
+        unmeasured.DrainRate.ShouldBeNull("one refresh is a baseline, not a rate");
+        unmeasured.EstimatedDrainSeconds.ShouldBeNull();
 
-        // Everything claimed: nothing left to wait at the head, and (after a refresh) nothing pending.
-        (await Engine.PollAsync(10, "inst-1", 0)).Count.ShouldBe(5);
+        // 4 settle over a (backdated) 8s since the baseline: 0.5/s, so the 6 left take ~12s.
+        await SettleAsync(wave.Id, 4, secondsSinceLastRefresh: 8);
+        var measured = await Engine.GetQueueSnapshotAsync();
+        measured.Depth.ShouldBe(6);
+        measured.DrainRate.ShouldNotBeNull().ShouldBe(0.5, tolerance: 0.02);
+        measured.EstimatedDrainSeconds.ShouldNotBeNull().ShouldBe(12, tolerance: 0.5);
+
+        // Everything settled: the wave completes, nothing pending, nothing left to estimate.
+        await SettleAsync(wave.Id, 6, secondsSinceLastRefresh: 2);
+        (await Engine.GetQueueSnapshotAsync()).ShouldBe(new QueueSnapshot(0));
+    }
+
+    /// <summary>A wave's own estimate: the first measured rate seeds it, later ones blend in over a ~30s time
+    /// constant (so one fast tick can't swing it), and it's gone once the wave isn't Active. Only claimable work is
+    /// estimated: a wave whose remainder is all paused has no finish to forecast.</summary>
+    [Fact]
+    public async Task a_wave_estimates_its_finish_from_a_smoothed_drain_rate()
+    {
+        await ResetAsync();
+        var wave = await CreateWaveAsync();
+        await SeedRipplesAsync(wave.Id, 100);
         await RefreshWaveStatsAsync();
-        (await Engine.GetQueueSnapshotAsync()).ShouldBe(new QueueSnapshot(0, 0));
+        (await Engine.GetWaveAsync(wave.Id))!.EstimatedSecondsRemaining.ShouldBeNull("no rate measured yet");
+
+        await SettleAsync(wave.Id, 20, secondsSinceLastRefresh: 10); // 2/s seeds the average
+        var seeded = (await Engine.GetWaveAsync(wave.Id))!;
+        seeded.DrainRate.ShouldNotBeNull().ShouldBe(2, tolerance: 0.05);
+        seeded.EstimatedSecondsRemaining.ShouldNotBeNull().ShouldBe(40, tolerance: 1); // 80 left at 2/s
+
+        // A 10s burst at 6/s moves the average only part of the way: 2 + (1 - e^(-10/30)) * (6 - 2) ≈ 3.13.
+        await SettleAsync(wave.Id, 60, secondsSinceLastRefresh: 10);
+        var blended = (await Engine.GetWaveAsync(wave.Id))!;
+        var expected = 2 + (1 - Math.Exp(-10.0 / 30)) * 4;
+        blended.DrainRate.ShouldNotBeNull().ShouldBe(expected, tolerance: 0.05);
+        blended.EstimatedSecondsRemaining.ShouldNotBeNull().ShouldBe(20 / expected, tolerance: 0.5);
+
+        // Only paused work left: nothing the cluster can drain, so no estimate.
+        await ExecuteAsync($"update ripple.ripple set state = 'Paused' where wave_id = '{wave.Id}' and state = 'Pending'");
+        await RefreshWaveStatsAsync();
+        var parked = (await Engine.GetWaveAsync(wave.Id))!;
+        parked.Paused.ShouldBe(20);
+        parked.EstimatedSecondsRemaining.ShouldBeNull();
+
+        // Drained: terminal waves carry no rate or estimate.
+        await ExecuteAsync($"update ripple.ripple set state = 'Succeeded' where wave_id = '{wave.Id}'");
+        await RefreshWaveStatsAsync();
+        var done = (await Engine.GetWaveAsync(wave.Id))!;
+        done.Status.ShouldBe(WaveStatus.Completed);
+        done.DrainRate.ShouldBeNull();
+        done.EstimatedSecondsRemaining.ShouldBeNull();
+    }
+
+    /// <summary>Settles <paramref name="count"/> of the wave's pending ripples and refreshes, with the previous
+    /// refresh backdated by <paramref name="secondsSinceLastRefresh"/> — a deterministic elapsed time for the rate,
+    /// without waiting on the wall clock.</summary>
+    private async Task SettleAsync(Guid waveId, int count, double secondsSinceLastRefresh)
+    {
+        await ExecuteAsync($"""
+            update ripple.ripple set state = 'Succeeded'
+            where id in (select id from ripple.ripple where wave_id = '{waveId}' and state = 'Pending' limit {count})
+            """);
+        await ExecuteAsync($"""
+            update ripple.wave set refreshed_at = now() - make_interval(secs => {secondsSinceLastRefresh})
+            where id = '{waveId}'
+            """);
+        await RefreshWaveStatsAsync();
     }
 
     /// <summary>The interventions that used to be visible only in logs are counted, and the queue gauges report
@@ -196,10 +259,10 @@ public sealed class TelemetryTests : RippleTestBase
         listener.RecordObservableInstruments();
         seen.ContainsKey("ripple.queue.depth").ShouldBeFalse("no sample yet, so nothing to report");
 
-        metrics.SetQueue(new QueueSnapshot(1200, 4.5));
+        metrics.SetQueue(new QueueSnapshot(1200, DrainRate: 40, EstimatedDrainSeconds: 30));
         listener.RecordObservableInstruments();
         seen["ripple.queue.depth"].ShouldBe(1200);
-        seen["ripple.queue.head_wait"].ShouldBe(4.5);
+        seen.ContainsKey("ripple.queue.head_wait").ShouldBeFalse("removed: it measured the draining wave's age, not lag");
 
         void Record(Instrument instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> measurementTags)
         {

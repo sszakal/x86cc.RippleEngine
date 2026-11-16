@@ -18,11 +18,24 @@ is the **only** writer of a wave's live numbers and the **only** place a wave co
    [paused type](/operations/dashboard#pause--resume) therefore stays `Active` until the type is resumed and
    those ripples drain: parked work is not done.
 
+3. **Updates each active wave's drain rate**: the ripples settled since the previous refresh, per elapsed
+   second, blended into `drain_rate` as an exponential moving average with a 30s time constant. `drain_settled`
+   records the settled count it was measured from. That count is taken against the *current* `ripple_count`, so
+   in-flight expansion never reads as negative progress. The rate decays toward 0 if a wave stalls.
+
 $$
 \text{succeeded} = \text{ripple\_count} - \text{pending} - \text{running} - \text{paused} - \text{failed}
 $$
 
-`succeeded` is derived at read time, so no read scans the settled millions. Before a wave's first refresh
+`succeeded` is derived at read time, so no read scans the settled millions. A wave's estimated finish is derived
+the same way, at read time:
+
+$$
+\text{eta} = \frac{\text{pending} + \text{running}}{\text{drain\_rate}}
+$$
+
+It is null for a wave that isn't Active, hasn't been refreshed twice yet, isn't measurably progressing, or has
+only paused work left. Before a wave's first refresh
 (`refreshed_at is null`) a read treats all its ripples as pending.
 
 ## Why recompute instead of count

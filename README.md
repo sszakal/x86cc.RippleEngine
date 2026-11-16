@@ -253,7 +253,7 @@ wave cannot complete until they settle.
   tagged with `type_key`) plus a per-instance `ripple.executing` gauge, and exports them over OTLP when
   `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Also the engine's interventions (`ripple.recovered`,
   `ripple.abandoned`, `ripple.released`, `ripple.settlement.retries` / `.rejected`), `ripple.poll.duration`, and
-  the cluster-wide queue gauges `ripple.queue.depth` and `ripple.queue.head_wait`. A host with its own
+  the cluster-wide `ripple.queue.depth` gauge. A host with its own
   OpenTelemetry setup can instead add the meter by name: `AddMeter("x86cc.RippleEngine")`.
 - **Tracing** — `o.EnableTracing = true` (on the creating host *and* the workers) publishes a
   `ripple.wave.create` span for the fan-out and a `ripple.execute` span per ripple attempt, each a root span

@@ -137,8 +137,8 @@ public class RippleEngineOptions
     /// </summary>
     public TimeSpan WaveStatsRefreshInterval { get; set; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>How often each instance samples the queue for the <c>ripple.queue.depth</c> /
-    /// <c>ripple.queue.head_wait</c> gauges. Nothing is read while no metrics listener is attached.</summary>
+    /// <summary>How often each instance samples the queue for the <c>ripple.queue.depth</c> gauge. Nothing is read
+    /// while no metrics listener is attached.</summary>
     public TimeSpan QueueMetricsInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>How often <see cref="CompactionLoop"/> rolls finished waves' splashes into the aggregated report

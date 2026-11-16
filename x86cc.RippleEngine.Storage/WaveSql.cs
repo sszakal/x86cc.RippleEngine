@@ -28,6 +28,20 @@ internal static class WaveSql
         "case when w.refreshed_at is null then 0 "
         + "else greatest(0, w.ripple_count - w.pending - w.running - w.paused - w.failed) end";
 
+    /// <summary>The live progress rate (ripples settled per second, a short EWMA) of wave <c>w</c>, or null when it
+    /// isn't Active or hasn't been refreshed twice yet.</summary>
+    public const string DrainRateExpr = "case when w.status = 'Active' then w.drain_rate end";
+
+    /// <summary>
+    /// Seconds until wave <c>w</c> is expected to finish at its current rate: its remaining pending + running
+    /// over <see cref="DrainRateExpr"/>. Null when it isn't Active, has nothing claimable left (only paused work
+    /// — that waits for a resume, not for the cluster), or isn't measurably progressing (no rate yet, or below
+    /// one ripple per thousand seconds — an estimate of days would be noise, not a forecast).
+    /// </summary>
+    public const string EstimatedSecondsRemainingExpr =
+        "case when w.status = 'Active' and w.refreshed_at is not null and w.drain_rate > 0.001 "
+        + "and w.pending + w.running > 0 then (w.pending + w.running) / w.drain_rate end";
+
     /// <summary>The projection, without a <c>where</c> clause — callers append their own predicate.</summary>
     public const string Select = $"""
         select w.id, w.name, w.type, w.payload, w.payload_type, w.status, w.ripple_count,
@@ -37,7 +51,9 @@ internal static class WaveSql
                {SucceededExpr} as succeeded,
                w.failed,
                w.retry_count,
-               w.created_at, w.completed_at, w.idempotency_key
+               w.created_at, w.completed_at, w.idempotency_key,
+               {DrainRateExpr} as drain_rate,
+               {EstimatedSecondsRemainingExpr} as estimated_seconds_remaining
         from {S}.wave w
         """;
 

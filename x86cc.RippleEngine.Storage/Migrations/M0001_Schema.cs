@@ -19,6 +19,11 @@ public sealed class M0001_Schema : Migration
 {
     public const string SchemaName = "ripple";
 
+    /// <summary>The time constant (seconds) of a wave's <c>drain_rate</c> EWMA: how quickly its estimated finish
+    /// follows a change in pace. Short enough to react within a minute to a competing wave arriving or leaving,
+    /// long enough to smooth the batch-at-a-time claim rhythm out of a 2s refresh.</summary>
+    public const int DrainRateTimeConstantSeconds = 30;
+
     public override void Up()
     {
         if (!Schema.Schema(SchemaName).Exists())
@@ -38,7 +43,12 @@ public sealed class M0001_Schema : Migration
         //     and compact_wave() stamps its authoritative final value before the splashes are deleted.
         //     `avg_duration_ms`/`splash_sample_count`
         //     are the wave's mean per-attempt execution time over its succeeded splashes — computed ONCE at
-        //     compaction (compact_wave, before the splashes are deleted), null until then. ------------------
+        //     compaction (compact_wave, before the splashes are deleted), null until then.
+        //     `drain_rate`/`drain_settled` are the wave's live progress rate, for its estimated finish:
+        //     refresh_wave_stats() stamps `drain_settled` (ripples settled — succeeded or failed — as of that
+        //     refresh) and blends the settled delta since the previous refresh into `drain_rate`, an EWMA in
+        //     ripples/second. Recomputed like the other numbers (never a hot-path counter); both null until the
+        //     first refresh, and `drain_rate` until the second. ------------------------------------------------
         Execute.Sql($"""
             create table {SchemaName}.wave (
                 id            uuid        not null primary key,
@@ -63,7 +73,9 @@ public sealed class M0001_Schema : Migration
                 idempotency_key     text   null,
                 -- The W3C traceparent of whatever created the wave, handed to the worker on the claim so each
                 -- execution can LINK back to the trace that caused it (see RippleDiagnostics). Null = untraced.
-                trace_parent        text   null
+                trace_parent        text   null,
+                drain_rate          double precision null,
+                drain_settled       bigint null
             )
             """);
         // A wave created under a caller-supplied key (WithIdempotencyKey) is created once: a repeat of the create
@@ -249,6 +261,25 @@ public sealed class M0001_Schema : Migration
         // the ONLY place it completes, so the numbers self-heal from the truth. succeeded is never stored — it
         // is derived at read time as ripple_count - pending - running - failed. Called periodically
         // (advisory-lock-gated) by WaveStatsRefreshLoop; a pg_cron job could call the identical function instead.
+        // The drain-rate EWMA's pieces, over the OLD row (w.*, as of the previous refresh) and this pass's counts
+        // (c.*). settled = ripple_count - pending - running - paused: succeeded + failed, using the CURRENT
+        // ripple_count — drain_settled stores it, rather than deriving the previous value from the old counts,
+        // because ripple_count grows with in-flight expansion and an old-counts derivation would read the new
+        // children as negative progress. The blend weight 1 - exp(-dt / tau) makes the average time-based, so it
+        // means the same whatever the refresh cadence (and however long a refresh was skipped); tau is
+        // DrainRateTimeConstantSeconds. A wave that stops progressing decays toward 0, so its estimate grows
+        // instead of freezing at the last good rate.
+        const string settledNow = "(w.ripple_count - c.pending - c.running - c.paused)";
+        const string dt = "extract(epoch from (now() - w.refreshed_at))";
+        const string instant = $"(greatest(0, {settledNow} - w.drain_settled) / {dt})";
+        var drainRate = $"""
+            case when w.refreshed_at is null or w.drain_settled is null or now() <= w.refreshed_at
+                          then w.drain_rate
+                     when w.drain_rate is null then {instant}
+                     else w.drain_rate + (1 - exp(-{dt} / {DrainRateTimeConstantSeconds})) * ({instant} - w.drain_rate)
+                end
+            """;
+
         Execute.Sql($"""
             create or replace function {SchemaName}.refresh_wave_stats() returns void
             language plpgsql as $fn$
@@ -259,6 +290,10 @@ public sealed class M0001_Schema : Migration
                     paused  = c.paused,
                     failed  = c.failed,
                     retry_count = c.retries,
+                    -- Progress rate for the wave's estimated finish (see drainRate above). Both read the OLD
+                    -- refreshed_at/drain_settled — SET expressions all see the pre-update row.
+                    drain_rate = {drainRate},
+                    drain_settled = {settledNow},
                     refreshed_at = now(),
                     -- A wave drains only when nothing is pending, running, OR paused: parked (paused) work is
                     -- not done, so a wave whose remainder is all Paused stays Active until it is resumed.

@@ -78,6 +78,22 @@ public static class DashboardApi
         api.MapGet("/cluster", async (IDashboardQueries queries) =>
             Results.Ok(new { instances = await queries.GetClusterAsync() }));
 
+        // Cluster-wide queue and its drain estimate, read from the active waves' recomputed numbers (the same
+        // snapshot the ripple.queue.depth gauge samples, so it needs no metrics pipeline). depth: pending ripples;
+        // drainRate: ripples settled per second across the cluster (the sum of the waves' live rates);
+        // estimatedDrainSeconds: remaining pending + running over that rate. Both estimates are null while
+        // nothing is measurably progressing.
+        api.MapGet("/queue", async (IEngineStore engine) =>
+        {
+            var snapshot = await engine.GetQueueSnapshotAsync();
+            return Results.Ok(new
+            {
+                depth = snapshot.Depth,
+                drainRate = snapshot.DrainRate,
+                estimatedDrainSeconds = snapshot.EstimatedDrainSeconds
+            });
+        });
+
         api.MapGet("/waves/{id:guid}/report.csv", (Guid id, IReportStore reports) => WaveReportCsv(id, reports));
 
         // Re-stamp a LIVE wave's remaining pending ripples with a new batch/gap — the only wave-scoped write in

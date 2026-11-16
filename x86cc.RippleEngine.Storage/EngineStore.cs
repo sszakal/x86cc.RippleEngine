@@ -25,12 +25,14 @@ public readonly record struct ClaimedRipple(
     string? WaveTraceParent = null);
 
 /// <summary>
-/// A sample of the queue for the <c>ripple.queue.*</c> gauges. <see cref="Depth"/> is the pending ripples across
-/// all active waves (from the waves' recomputed numbers, so up to one stats refresh stale).
-/// <see cref="HeadWaitSeconds"/> is how long the ripple that would be claimed NEXT has existed — the cluster's
-/// lag at the front of the queue; 0 when nothing is claimable.
+/// A cluster-wide sample of the queue, all read from the active waves' recomputed numbers (so up to one stats
+/// refresh stale): <see cref="Depth"/> is their pending ripples (the <c>ripple.queue.depth</c> gauge);
+/// <see cref="DrainRate"/> is the sum of their live <c>drain_rate</c>s — ripples settled per second across the
+/// cluster, since every settled ripple belongs to exactly one wave; <see cref="EstimatedDrainSeconds"/> is their
+/// remaining pending + running over that rate. The two estimates are null while nothing is measurably
+/// progressing (no active waves, none refreshed twice yet, or everything left is paused).
 /// </summary>
-public readonly record struct QueueSnapshot(long Depth, double HeadWaitSeconds);
+public readonly record struct QueueSnapshot(long Depth, double? DrainRate = null, double? EstimatedDrainSeconds = null);
 
 /// <summary>
 /// The engine's coordination surface: creating waves and their ripples, the global FIFO claim, cluster
@@ -899,20 +901,17 @@ internal sealed class EngineStore(RippleDataSource dataSource, TimeProvider time
         }
     }
 
-    // Depth comes from the waves' own recomputed numbers (ix_wave_active), never a count over ripple — the
-    // honest pre-refresh view included, as in WaveSql. Head wait is the age of the ripple the claim would take
-    // next: the same eligibility as PollSql's (minus the per-instance handler filter), first row off
-    // ix_ripple_schedule_order. Like the claim, it walks past any backing-off rows parked at the left edge.
+    // Everything comes from the active waves' own recomputed numbers (ix_wave_active), never a count over ripple —
+    // the honest pre-refresh view included, as in WaveSql. The drain estimate only counts claimable work
+    // (pending + running): paused ripples wait for a resume, not for the cluster.
     private const string QueueSnapshotSql = $"""
-        select
-            (select coalesce(sum(case when refreshed_at is null then ripple_count else pending end), 0)::bigint
-             from {S}.wave where status = 'Active') as depth,
-            coalesce((select extract(epoch from now() - head.created_at)::double precision
-                      from (select created_at from {S}.ripple
-                            where state = 'Pending' and (next_attempt_at is null or next_attempt_at <= now())
-                              and type_key <> all (select type_key from {S}.type_schedule where pause_state = 'paused')
-                            order by schedule_order
-                            limit 1) head), 0) as head_wait_seconds
+        select depth,
+               case when rate > 0.001 then rate end as drain_rate,
+               case when rate > 0.001 and remaining > 0 then remaining / rate end as estimated_drain_seconds
+        from (select coalesce(sum({WaveSql.PendingExpr}), 0)::bigint as depth,
+                     coalesce(sum(w.drain_rate), 0)::double precision as rate,
+                     coalesce(sum({WaveSql.PendingExpr} + w.running), 0)::double precision as remaining
+              from {S}.wave w where w.status = 'Active') q
         """;
 
     public async Task<QueueSnapshot> GetQueueSnapshotAsync(CancellationToken ct = default)

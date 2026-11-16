@@ -1,7 +1,8 @@
 import { DecimalPipe } from '@angular/common';
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { formatDuration } from '../core/duration';
 import { RippleApiService } from '../core/ripple-api.service';
-import { ClusterInstance, TypeMetric } from '../core/models';
+import { ClusterInstance, QueueSnapshot, TypeMetric } from '../core/models';
 
 // A heartbeat older than this reads as a down/stale replica (heartbeats are frequent).
 const STALE_SECONDS = 30;
@@ -16,7 +17,7 @@ const DEFAULT_TYPE_KEY = '__default__';
   template: `
     <div class="mb-6">
       <h1 class="text-2xl font-semibold text-gray-900">Metrics</h1>
-      <p class="mt-1 text-sm text-gray-500">Live cluster, per-type scheduling share, execution time and queue wait.</p>
+      <p class="mt-1 text-sm text-gray-500">Live cluster, queue and drain estimate, per-type scheduling share, execution time and queue wait.</p>
     </div>
 
     <!-- Live cluster -->
@@ -45,6 +46,41 @@ const DEFAULT_TYPE_KEY = '__default__';
           <div class="text-sm text-gray-400">No workers have reported a heartbeat yet.</div>
         }
       </div>
+    </div>
+
+    <!-- Queue (cluster-wide): depth, the measured drain rate, and how long the backlog takes at that rate -->
+    <div class="card mb-6">
+      <div class="mb-4 flex items-center justify-between">
+        <div class="text-sm font-medium text-gray-700">Queue</div>
+        <div class="text-xs text-gray-400">updates every {{ queueRefreshSeconds }}s</div>
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        <div>
+          <div class="text-xs text-gray-500">Depth</div>
+          <div class="text-2xl font-semibold text-gray-900">
+            @if (queue(); as q) { {{ q.depth | number }} } @else { — }
+          </div>
+          <div class="text-xs text-gray-400">pending ripples across active waves</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500">Drain rate</div>
+          <div class="text-2xl font-semibold text-gray-900">
+            @if (queue()?.drainRate; as rate) { {{ rate | number: '1.0-0' }} /s } @else { — }
+          </div>
+          <div class="text-xs text-gray-400">ripples settled per second, cluster-wide</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500">Estimated drain time</div>
+          <div class="text-2xl font-semibold text-gray-900">
+            @if (queue()?.estimatedDrainSeconds; as eta) { {{ duration(eta) }} } @else { — }
+          </div>
+          <div class="text-xs text-gray-400">to clear everything claimable at the current rate</div>
+        </div>
+      </div>
+      <p class="mt-4 text-xs text-gray-400">
+        The rate is a ~30s moving average of each active wave's progress, so the estimate follows changes in pace
+        within about a minute. It assumes that pace holds and doesn't count paused work or future expansions.
+      </p>
     </div>
 
     <!-- Schedule share = batch_size / gap_seconds — a relative fair-share weight, NOT a wall-clock rate -->
@@ -140,11 +176,16 @@ const DEFAULT_TYPE_KEY = '__default__';
     </div>
   `
 })
-export class MetricsComponent implements OnInit {
+export class MetricsComponent implements OnInit, OnDestroy {
   private readonly api = inject(RippleApiService);
 
   readonly metrics = signal<TypeMetric[]>([]);
   readonly instances = signal<ClusterInstance[]>([]);
+  readonly queue = signal<QueueSnapshot | null>(null);
+  readonly queueRefreshSeconds = 5;
+  private queueTimer: ReturnType<typeof setInterval> | null = null;
+
+
 
   readonly maxShare = computed(() => Math.max(1, ...this.metrics().map((m) => m.share ?? 0)));
   readonly maxAvg = computed(() => Math.max(1, ...this.metrics().map((m) => m.avgMs ?? 0)));
@@ -161,6 +202,24 @@ export class MetricsComponent implements OnInit {
   ngOnInit(): void {
     this.api.getTypeMetrics().subscribe((m) => this.metrics.set(m.filter((t) => t.typeKey !== DEFAULT_TYPE_KEY)));
     this.api.getCluster().subscribe((c) => this.instances.set(c.instances));
+    this.loadQueue();
+    // Only the queue card polls: it is one cheap read over the active waves, and a drain estimate that never
+    // moves is not much of an estimate. The rest of the page is per-compaction data that changes slowly.
+    this.queueTimer = setInterval(() => this.loadQueue(), this.queueRefreshSeconds * 1000);
+  }
+
+  ngOnDestroy(): void {
+    if (this.queueTimer) {
+      clearInterval(this.queueTimer);
+    }
+  }
+
+  private loadQueue(): void {
+    this.api.getQueue().subscribe((q) => this.queue.set(q));
+  }
+
+  duration(seconds: number): string {
+    return formatDuration(seconds);
   }
 
   pct(value: number | null, max: number): number {

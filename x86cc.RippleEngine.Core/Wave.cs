@@ -76,6 +76,18 @@ public class Wave
     /// <summary>Re-execution attempts — splashes with attempt &gt; 1. Recomputed, not a hot-path counter.</summary>
     public long RetryCount { get; set; }
 
+    /// <summary>
+    /// How fast the wave is settling ripples right now (ripples/second, a short moving average recomputed by the
+    /// stats refresh). Null when the wave isn't Active or the refresh hasn't measured it yet. It reflects the
+    /// wave's current share of the cluster, so it moves as competing waves arrive and drain.
+    /// </summary>
+    public double? DrainRate { get; set; }
+    /// <summary>
+    /// Seconds until the wave is expected to finish at <see cref="DrainRate"/>: its pending + running over the
+    /// rate. An estimate, not a promise — it assumes the current pace holds and does not foresee in-flight
+    /// expansion. Null when not Active, not yet measured, not progressing, or when only paused work is left.
+    /// </summary>
+    public double? EstimatedSecondsRemaining { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>Set when the wave drains (Active → Completed/Faulted).</summary>

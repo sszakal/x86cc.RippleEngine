@@ -47,9 +47,9 @@ public sealed class DashboardQueriesTests : RippleTestBase
 
         JsonKeys(listed).ShouldBe(
         [
-            "avgDurationMs", "compactedAt", "completedAt", "createdAt", "durationMs", "failed", "id", "name",
-            "paused", "pending", "retryCount", "rippleCount", "running", "splashSampleCount", "status", "succeeded",
-            "throughput", "type"
+            "avgDurationMs", "compactedAt", "completedAt", "createdAt", "drainRate", "durationMs",
+            "estimatedSecondsRemaining", "failed", "id", "name", "paused", "pending", "retryCount", "rippleCount",
+            "running", "splashSampleCount", "status", "succeeded", "throughput", "type"
         ]);
     }
 

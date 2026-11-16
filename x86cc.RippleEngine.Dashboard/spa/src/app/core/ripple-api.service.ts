@@ -5,6 +5,7 @@ import { downloadBlob } from './download';
 import { mockActivity } from './mock-activity';
 import {
   ClusterResponse,
+  QueueSnapshot,
   EngineInfo,
   HistogramResponse,
   TypeMetric,
@@ -54,6 +55,10 @@ export class RippleApiService {
 
   getCluster(): Observable<ClusterResponse> {
     return this.http.get<ClusterResponse>(`${this.base}/cluster`);
+  }
+
+  getQueue(): Observable<QueueSnapshot> {
+    return this.http.get<QueueSnapshot>(`${this.base}/queue`);
   }
 
   /** The scheduler's per-type config (the DEFAULT row + each registered type), for the Settings page. */

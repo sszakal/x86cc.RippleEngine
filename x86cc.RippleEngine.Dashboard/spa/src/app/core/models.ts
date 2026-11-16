@@ -29,6 +29,13 @@ export interface Wave {
   durationMs: number | null;
   /** Achieved throughput (ripples/sec) over the wave's wall-clock duration; null while still active. */
   throughput: number | null;
+  /** Live progress rate (ripples settled/sec, a ~30s moving average) while Active; null otherwise or until measured. */
+  drainRate: number | null;
+  /**
+   * Seconds to the estimated finish at `drainRate` (pending + running ÷ rate) while Active. Null when not yet
+   * measured, not progressing, or when only paused work is left.
+   */
+  estimatedSecondsRemaining: number | null;
   createdAt: string;
   completedAt: string | null;
   compactedAt: string | null;
@@ -177,4 +184,14 @@ export interface ClusterInstance {
 
 export interface ClusterResponse {
   instances: ClusterInstance[];
+}
+
+/** Cluster-wide queue and its drain estimate (`/api/queue`). */
+export interface QueueSnapshot {
+  /** Pending ripples across all active waves. */
+  depth: number;
+  /** Ripples settled per second across the cluster (the sum of the active waves' live rates); null until measured. */
+  drainRate: number | null;
+  /** Seconds until everything claimable is drained at `drainRate`; null while nothing is measurably progressing. */
+  estimatedDrainSeconds: number | null;
 }

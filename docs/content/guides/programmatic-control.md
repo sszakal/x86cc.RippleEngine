@@ -43,6 +43,8 @@ public async Task<Wave> WaitForWaveAsync(IEngineStore engine, Guid waveId, Cance
 | `Pending` / `Running` / `Paused` / `Failed` | recomputed from the ripple rows by the [stats refresh](/architecture/stats-and-completion) |
 | `Succeeded` | derived: `RippleCount − Pending − Running − Paused − Failed` |
 | `RetryCount` | re-execution attempts (splashes with attempt > 1) |
+| `DrainRate` | ripples settled per second right now (a ~30s moving average); null unless Active and measured |
+| `EstimatedSecondsRemaining` | `(Pending + Running) / DrainRate`: seconds to the estimated finish; null when not measurable or only paused work is left |
 | `CreatedAt` / `CompletedAt` | lifecycle timestamps |
 | `Payload` / `PayloadType` / `Type` | the shared wave payload and its type |
 | `IdempotencyKey` | the key the wave was created under, if any |

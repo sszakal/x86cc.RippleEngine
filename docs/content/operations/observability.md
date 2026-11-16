@@ -25,9 +25,8 @@ configured. A host with its own setup can add the meter by name: `AddMeter("x86c
 | `ripple.settlement.rejected` | counter | — | outcomes the database rejected (isolated) |
 | `ripple.poll.duration` | histogram | — | claim round-trip time |
 | `ripple.queue.depth` | gauge | — | pending ripples across active waves (cluster-wide) |
-| `ripple.queue.head_wait` | gauge | — | age of the ripple the next claim would take |
 
-The queue gauges are sampled every `QueueMetricsInterval` (15s) by `QueueMetricsLoop`; every instance reports
+The queue gauge is sampled every `QueueMetricsInterval` (15s) by `QueueMetricsLoop`; every instance reports
 the same series, and nothing is read while no one listens.
 
 ## Tracing

@@ -56,7 +56,7 @@ public sealed class RippleSetupOptions : RippleEngineOptions, IRippleFeatures
     /// Publishes the engine's metrics — <c>ripple.claimed</c> / <c>succeeded</c> / <c>failed</c> /
     /// <c>duration</c> (tagged with <c>type_key</c>), the per-instance <c>ripple.executing</c> gauge, the
     /// intervention counters (<c>recovered</c>, <c>abandoned</c>, <c>released</c>, <c>settlement.*</c>) and the
-    /// cluster-wide <c>ripple.queue.depth</c> / <c>ripple.queue.head_wait</c> gauges — by
+    /// cluster-wide <c>ripple.queue.depth</c> gauge — by
     /// adding <see cref="RippleMetrics.MeterName"/> to OpenTelemetry, and exporting over OTLP when
     /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is configured. Without that endpoint it only registers the meter, so
     /// a standalone run stays quiet and a host with its own exporter keeps it.

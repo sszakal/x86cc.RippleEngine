@@ -28,6 +28,10 @@ public record DashboardWave
     public long SplashSampleCount { get; init; }
     public long? DurationMs { get; init; }
     public long? Throughput { get; init; }
+    /// <summary>Live progress rate (ripples/second) while Active; see <see cref="Core.Wave.DrainRate"/>.</summary>
+    public double? DrainRate { get; init; }
+    /// <summary>Seconds to the estimated finish while Active; see <see cref="Core.Wave.EstimatedSecondsRemaining"/>.</summary>
+    public double? EstimatedSecondsRemaining { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public DateTimeOffset? CompactedAt { get; init; }
@@ -122,6 +126,8 @@ internal sealed class DashboardQueries(RippleDataSource dataSource) : IDashboard
              then round(extract(epoch from (w.completed_at - w.created_at)) * 1000)::bigint end as duration_ms,
         case when w.completed_at is not null and w.completed_at > w.created_at
              then round(w.ripple_count / extract(epoch from (w.completed_at - w.created_at)))::bigint end as throughput,
+        {WaveSql.DrainRateExpr} as drain_rate,
+        {WaveSql.EstimatedSecondsRemainingExpr} as estimated_seconds_remaining,
         w.created_at, w.completed_at, w.compacted_at
         """;
 
