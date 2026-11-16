@@ -327,7 +327,9 @@ free write and removes the post-commit race the old sharded-counter model had to
 4. `prune` — the dead heartbeat rows.
 
 No counter repair and no completion logic — the wave's numbers and any resulting drain self-heal on the next
-`refresh_wave_stats()`. It's idempotent and nearly free when healthy (empty `dead` set matches nothing). A *live*
+`refresh_wave_stats()`. It's idempotent and nearly free when healthy (empty `dead` set matches nothing). The same
+loop then runs the self-stranded sweep (`RecoverSelfStrandedAsync`); each sweep is caught on its own, so one
+failing never skips the other for the tick. A *live*
 instance that can't flush a settlement does **not** rely on recovery — it retries the write itself, because
 recovery only reclaims *dead* instances.
 

@@ -568,6 +568,32 @@ public sealed class ClockDrivenTests
         await dispatcher.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>One failing sweep must not skip the other: chained, a dead-instance sweep that kept failing would
+    /// starve self-reconciliation — the only rescue for a live instance's own stranded claims — indefinitely.</summary>
+    [Theory]
+    [InlineData("RecoverStaleAsync", "RecoverSelfStrandedAsync")]
+    [InlineData("RecoverSelfStrandedAsync", "RecoverStaleAsync")]
+    public async Task a_failing_recovery_sweep_does_not_skip_the_other(string failing, string other)
+    {
+        var options = new RippleEngineOptions { InstanceId = "clock-test", RecoveryInterval = TimeSpan.FromSeconds(10) };
+        var store = ScriptedEngineStore.Create(_time, method => method == failing
+            ? Task.FromException<int>(new InvalidOperationException("sweep failed"))
+            : Task.FromResult(0));
+        using var loop = new RecoveryLoop(store.AsEngineStore, new InFlightTracker(), new RippleMetrics(),
+            Options.Create(options), _time, NullLogger<RecoveryLoop>.Instance);
+        await loop.StartAsync(CancellationToken.None);
+
+        foreach (var tick in new[] { 1, 2 })
+        {
+            await WaitUntilAsync(() => _time.TimersCreated == tick);
+            _time.Advance(options.RecoveryInterval);
+            await WaitUntilAsync(() => store.Calls(other) == tick);
+            store.Calls(failing).ShouldBe(tick);
+        }
+
+        await loop.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public async Task a_periodic_loop_waits_its_interval_and_keeps_going_after_a_failed_tick()
     {

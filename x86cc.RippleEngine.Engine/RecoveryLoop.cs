@@ -28,25 +28,49 @@ internal sealed class RecoveryLoop(
 
     protected override string FailureMessage => "Ripple recovery sweep failed";
 
+    /// <remarks>
+    /// The two sweeps are independent: each is caught on its own, so one failing (a lock timeout or a statement
+    /// error in its SQL) never skips the other for the tick. Chained, a persistently failing dead-instance sweep
+    /// would starve self-reconciliation entirely — and that is the only path that rescues a LIVE instance's
+    /// stranded claims. Cancellation still propagates to the loop.
+    /// </remarks>
     protected override async Task TickAsync(CancellationToken stoppingToken)
     {
         // Detect stale instances (excluding self) and requeue their orphans.
-        var requeued = await engine.RecoverStaleAsync(
-            _options.HeartbeatTimeout, _options.InstanceId, stoppingToken);
-        metrics.Recovered(requeued, "dead_instance");
-        if (requeued > 0)
+        await SweepAsync("dead-instance", async () =>
         {
-            Logger.LogWarning("Recovered {Count} ripple(s) from dead instance(s)", requeued);
-        }
+            var requeued = await engine.RecoverStaleAsync(
+                _options.HeartbeatTimeout, _options.InstanceId, stoppingToken);
+            metrics.Recovered(requeued, "dead_instance");
+            if (requeued > 0)
+            {
+                Logger.LogWarning("Recovered {Count} ripple(s) from dead instance(s)", requeued);
+            }
+        });
 
         // Release any of OUR OWN claims the execute block isn't actually running (past the grace
         // window), gated on the live in-flight set so genuinely-executing (or still-settling) ripples are kept.
-        var reclaimed = await engine.RecoverSelfStrandedAsync(
-            _options.InstanceId, inFlight.RippleIds, _options.SelfReconcileGrace, stoppingToken);
-        metrics.Recovered(reclaimed, "self_stranded");
-        if (reclaimed > 0)
+        await SweepAsync("self-stranded", async () =>
         {
-            Logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);
+            var reclaimed = await engine.RecoverSelfStrandedAsync(
+                _options.InstanceId, inFlight.RippleIds, _options.SelfReconcileGrace, stoppingToken);
+            metrics.Recovered(reclaimed, "self_stranded");
+            if (reclaimed > 0)
+            {
+                Logger.LogWarning("Reclaimed {Count} self-stranded ripple(s) — claimed but not executing", reclaimed);
+            }
+        });
+    }
+
+    private async Task SweepAsync(string sweep, Func<Task> run)
+    {
+        try
+        {
+            await run();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogError(e, "Ripple {Sweep} recovery sweep failed", sweep);
         }
     }
 }

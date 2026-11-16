@@ -65,6 +65,9 @@ handler, or a poll abandoned after its claim committed. `RecoverSelfStrandedAsyn
 database says are `Running & claimed_by = me` but whose ids aren't in `InFlightTracker`, past a
 `SelfReconcileGrace` window that covers the claim → enqueue gap.
 
+The two sweeps fail independently: if one throws, it is logged and the other still runs in the same tick, so
+a dead-instance sweep that keeps failing can't block the only path that rescues a live instance's own claims.
+
 ```mermaid
 flowchart TD
     R{Running ripple} --> Q1{Owner heartbeat<br/>stale?}
