@@ -17,6 +17,10 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build:
     name: Build, test & pack
